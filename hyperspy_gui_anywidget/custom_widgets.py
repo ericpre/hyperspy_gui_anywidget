@@ -8,7 +8,7 @@ import sys
 
 import traitlets
 from anywidget.widget import AnyWidget
-from ipywidgets import Accordion, HBox, Tab, VBox
+from ipywidgets import Accordion, GridBox, HBox, Tab, VBox
 
 
 class FloatTextWidget(AnyWidget):
@@ -803,6 +803,13 @@ class ContainerWidget:
             return _make_flat_container(children, layout, **kwargs)
         if layout == "horizontal":
             return HBox(children=children, **kwargs)
+        elif layout == "grid":
+            grid_columns = kwargs.pop("grid_template_columns", None)
+            gb = GridBox(children=children, **kwargs)
+            if grid_columns:
+                gb.layout.grid_template_columns = grid_columns
+                gb.layout.grid_template_rows = "auto"
+            return gb
         elif layout == "tabs":
             titles = kwargs.pop("titles", None)
             tab = Tab(children=children, **kwargs)
@@ -946,6 +953,18 @@ def _flatten_widget_tree(children):
             )
             configs.extend(_flatten_widget_tree(child.children))
             configs.append({"type": "layout_end"})
+        elif isinstance(child, GridBox):
+            # Grid containers keep their column template so the flattened
+            # Marimo rendering places cells into the same table layout.
+            configs.append(
+                {
+                    "type": "layout_start",
+                    "direction": "grid",
+                    "grid_template_columns": child.layout.grid_template_columns,
+                }
+            )
+            configs.extend(_flatten_widget_tree(child.children))
+            configs.append({"type": "layout_end"})
         elif isinstance(child, Tab):
             for i, tab_child in enumerate(child.children):
                 title = child.get_title(i)
@@ -984,6 +1003,19 @@ def _make_flat_container(children, layout, **kwargs):
             configs.append({"type": "tab_start", "title": title})
             configs.extend(_flatten_widget_tree([child]))
             configs.append({"type": "tab_end"})
+        layout = "vertical"
+    elif layout == "grid":
+        # Wrap the grid into layout markers so the root FlatContainer stays
+        # a flex column while a nested container renders the grid cells.
+        configs = [
+            {
+                "type": "layout_start",
+                "direction": "grid",
+                "grid_template_columns": kwargs.get("grid_template_columns"),
+            }
+        ]
+        configs.extend(_flatten_widget_tree(children))
+        configs.append({"type": "layout_end"})
         layout = "vertical"
     else:
         configs = _flatten_widget_tree(children)
@@ -1322,10 +1354,19 @@ class FlatContainer(AnyWidget):
         }
         if (cfg.type === "layout_start") {
           const container = document.createElement("div");
-          container.style.display = "flex";
-          container.style.flexDirection = cfg.direction;
-          container.style.gap = "10px";
-          container.style.flexWrap = "wrap";
+          if (cfg.direction === "grid") {
+            // Grid containers rely on the column template carried in the
+            // config so the flattened table matches the Jupyter GridBox.
+            container.style.display = "grid";
+            if (cfg.grid_template_columns) {
+              container.style.gridTemplateColumns = cfg.grid_template_columns;
+            }
+          } else {
+            container.style.display = "flex";
+            container.style.flexDirection = cfg.direction;
+            container.style.gap = "10px";
+            container.style.flexWrap = "wrap";
+          }
           const current = stack[stack.length - 1];
           current.parent.appendChild(container);
           stack.push({ parent: container, layout: cfg.direction });

@@ -2,7 +2,7 @@ import sys
 from unittest.mock import patch
 
 import pytest
-from ipywidgets import Accordion, HBox, Tab, VBox
+from ipywidgets import Accordion, GridBox, HBox, Tab, VBox
 
 from hyperspy_gui_anywidget.custom_widgets import (
     BoundedFloatTextWidget,
@@ -91,6 +91,40 @@ def test_flatten_widget_tree_preserves_tabs_and_accordions():
     assert types.count("tab_end") == 2
     assert "accordion_start" in types
     assert "accordion_end" in types
+
+
+def test_container_widget_grid_layout_builds_gridbox():
+    cell = FloatTextWidget(description="Element")
+
+    container = ContainerWidget(children=[cell], layout="grid", grid_template_columns="70px 100px")
+
+    assert isinstance(container, GridBox)
+    assert container.layout.grid_template_columns == "70px 100px"
+    assert container.layout.grid_template_rows == "auto"
+
+
+def test_flatten_widget_tree_preserves_grid_columns():
+    first = FloatTextWidget(description="Element")
+    second = FloatTextWidget(description="Line")
+    grid = GridBox(children=[first, second])
+    grid.layout.grid_template_columns = "70px 100px"
+
+    configs = _flatten_widget_tree([grid])
+
+    grid_starts = [cfg for cfg in configs if cfg.get("direction") == "grid"]
+    assert len(grid_starts) == 1
+    assert grid_starts[0]["grid_template_columns"] == "70px 100px"
+    assert [cfg["type"] for cfg in configs].count("layout_end") == 1
+
+
+def test_make_flat_container_wraps_root_grid_in_layout_markers():
+    child = FloatTextWidget(description="Element", value=1.0)
+
+    container = _make_flat_container([child], "grid", grid_template_columns="70px 100px")
+
+    directions = [cfg.get("direction") for cfg in container._children_config]
+    assert "grid" in directions
+    assert container._layout == "vertical"
 
 
 def test_make_flat_container_syncs_children_values():
