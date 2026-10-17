@@ -6,6 +6,7 @@ throughout the package, plus helper functions for labeling, trait-to-widget
 conversion, and the ``add_display_arg`` decorator.
 """
 
+import contextvars
 import functools
 import sys
 from threading import Timer
@@ -395,7 +396,13 @@ def debounce(wait):
 
             if timer is not None:
                 timer.cancel()
-            timer = Timer(wait, call_it)
+            # Capture the contextvars context at call time and run the
+            # callback inside it.  Without this, callbacks scheduled from
+            # a Jupyter kernel crash when they create ipywidget comms:
+            # ipykernel resolves the current cell through contextvars
+            # that only exist in the cell execution context.
+            context = contextvars.copy_context()
+            timer = Timer(wait, context.run, (call_it,))
             timer.start()
 
         return debounced

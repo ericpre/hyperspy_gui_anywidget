@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import contextvars
 import sys
 import time
 from unittest.mock import MagicMock, patch
@@ -190,6 +191,21 @@ def test_debounce_waits_for_last_invocation():
     time.sleep(0.2)
     assert calls == []
     time.sleep(0.6)
+    assert calls == [1]
+
+
+def test_debounce_runs_with_context_captured_at_call_time():
+    var = contextvars.ContextVar("test_var")
+    calls = []
+
+    @utils.debounce(0.1)
+    def fn():
+        calls.append(var.get())
+
+    var.set(1)
+    fn()
+    var.set(2)
+    time.sleep(0.3)
     assert calls == [1]
 
 
