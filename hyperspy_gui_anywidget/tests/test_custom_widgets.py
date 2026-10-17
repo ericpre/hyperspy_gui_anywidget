@@ -5,6 +5,7 @@ import pytest
 from ipywidgets import Accordion, HBox, Tab, VBox
 
 from hyperspy_gui_anywidget.custom_widgets import (
+    BoundedFloatTextWidget,
     ContainerWidget,
     FlatContainer,
     FloatRangeSliderWidget,
@@ -49,6 +50,26 @@ def test_widget_config_marks_color_text_widgets(is_color):
     assert cfg["is_color"] is is_color
     assert cfg["disabled"] is True
     assert cfg["visible"] is False
+
+
+def test_widget_config_passes_decimals_for_bounded_float():
+    widget = BoundedFloatTextWidget(min=0, step=0.01, decimals=2)
+
+    cfg = _widget_config(widget)
+
+    assert cfg["type"] == "number"
+    assert cfg["decimals"] == 2
+
+
+def test_bounded_float_rounds_value_to_decimals():
+    widget = BoundedFloatTextWidget(min=0, step=0.01, decimals=2)
+
+    widget.value = 9.923874
+    assert widget.value == 9.92
+
+    widget.decimals = None
+    widget.value = 9.923874
+    assert widget.value == 9.923874
 
 
 def test_flatten_widget_tree_preserves_tabs_and_accordions():

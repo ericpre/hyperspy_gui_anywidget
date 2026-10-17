@@ -519,10 +519,18 @@ class BoundedFloatTextWidget(AnyWidget):
       const disabled = model.get("disabled");
       const visible = model.get("visible");
 
+      function formatValue(v) {
+        if (v === null || v === undefined || isNaN(v)) return v;
+        const decimals = model.get("decimals");
+        return decimals !== null && decimals !== undefined
+          ? Number(v).toFixed(decimals)
+          : v;
+      }
+
       el.innerHTML = `
         <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
           <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
-          <input type="number" min="${min}" max="${max}" step="${step}" value="${value}" ${disabled ? "disabled" : ""} style="flex: 0 0 160px; width: 160px; max-width: 160px;">
+          <input type="number" min="${min}" max="${max}" step="${step}" value="${formatValue(value)}" ${disabled ? "disabled" : ""} style="flex: 0 0 160px; width: 160px; max-width: 160px;">
         </div>
       `;
       const row = el.querySelector("div");
@@ -545,7 +553,11 @@ class BoundedFloatTextWidget(AnyWidget):
       input.addEventListener("change", commitValue);
 
       model.on("change:value", () => {
-        input.value = model.get("value");
+        input.value = formatValue(model.get("value"));
+      });
+
+      model.on("change:decimals", () => {
+        input.value = formatValue(parseFloat(input.value));
       });
 
       model.on("change:min", () => {
@@ -582,10 +594,17 @@ class BoundedFloatTextWidget(AnyWidget):
     disabled = traitlets.Bool(False).tag(sync=True)
     continuous_update = traitlets.Bool(True).tag(sync=True)
     visible = traitlets.Bool(True).tag(sync=True)
+    # Number of decimal places used to format the displayed value; None
+    # keeps the raw float representation.
+    # Rounding at the traitlet validator keeps the synced Python value and
+    # the two-decimal display consistent when traits are linked both ways.
+    decimals = traitlets.Any(None, allow_none=True).tag(sync=True)
 
     @traitlets.validate("value")
     def _validate_value(self, proposal):
         value = proposal["value"]
+        if self.decimals is not None:
+            value = round(value, self.decimals)
         return min(max(value, self.min), self.max)
 
 
@@ -815,6 +834,7 @@ def _widget_config(w):
         cfg["step"] = str(getattr(w, "step", "any"))
         cfg["min"] = getattr(w, "min", None)
         cfg["max"] = getattr(w, "max", None)
+        cfg["decimals"] = getattr(w, "decimals", None)
         cfg["continuous_update"] = getattr(w, "continuous_update", True)
     elif isinstance(w, TextWidget):
         cfg["type"] = "text"
@@ -1150,7 +1170,12 @@ class FlatContainer(AnyWidget):
           if (!el_info) continue;
           const { el: target, colorEl, cfg } = el_info;
           if (cfg.type === "number" || cfg.type === "text") {
-            target.value = val;
+            target.value =
+              cfg.type === "number" &&
+              cfg.decimals !== null &&
+              cfg.decimals !== undefined
+                ? Number(val).toFixed(cfg.decimals)
+                : val;
             if (cfg.is_color && colorEl) {
               colorEl.value = colorPickerValue(val);
             }
@@ -1529,7 +1554,10 @@ class FlatContainer(AnyWidget):
           input = document.createElement("input");
           input.type = "number";
           input.step = cfg.step || "any";
-          input.value = cfg.value;
+          input.value =
+            cfg.decimals !== null && cfg.decimals !== undefined
+              ? Number(cfg.value).toFixed(cfg.decimals)
+              : cfg.value;
           if (cfg.min !== null && cfg.min !== undefined) input.min = cfg.min;
           if (cfg.max !== null && cfg.max !== undefined) input.max = cfg.max;
           input.disabled = cfg.disabled;
