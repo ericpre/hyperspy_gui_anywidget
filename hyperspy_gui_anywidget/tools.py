@@ -8,6 +8,7 @@ from hyperspy.signal_tools import (
 from link_traits import link
 
 from hyperspy_gui_anywidget.custom_widgets import (
+    BoundedFloatTextWidget,
     ButtonWidget,
     CheckboxWidget,
     ContainerWidget,
@@ -26,6 +27,7 @@ from hyperspy_gui_anywidget.custom_widgets import (
 from hyperspy_gui_anywidget.utils import (
     _Dropdown,
     add_display_arg,
+    debounce,
     enum2dropdown,
     labelme,
 )
@@ -444,6 +446,135 @@ def print_edges_table_aw(obj, **kwargs):
             ContainerWidget(children=[gb, control_box], layout="horizontal"),
             help,
             ContainerWidget(children=[reset, close], layout="horizontal"),
+        ],
+        layout="vertical",
+    )
+
+    return {
+        "widget": box,
+        "wdict": wdict,
+    }
+
+
+@add_display_arg
+def print_lines_table_aw(obj, **kwargs):
+    """Build a widget for interactively finding X-ray lines in an EDS signal.
+
+    Parameters
+    ----------
+    obj : exspy._signal_tools.EDSRange
+        The X-ray lines tool instance exposing ``position``, ``width`` and
+        ``only_lines`` traits, ``get_lines_information()``,
+        ``update_markers()`` and ``selected_elements``.
+    **kwargs
+        Passed through to the widget builder.
+
+    Returns
+    -------
+    dict or None
+        ``{"widget": ContainerWidget, "wdict": {...}}`` when
+        ``display=False``, otherwise ``None`` (widget displayed inline).
+    """
+    wdict = {}
+    position = BoundedFloatTextWidget(min=0, description="Position (keV)", step=0.1)
+    width = BoundedFloatTextWidget(min=0, description="Width (keV)", step=0.1)
+    only_lines = enum2dropdown(obj.traits()["only_lines"], description="Only lines")
+    update = ButtonWidget(description="Refresh table")
+    gb = ContainerWidget(children=[], layout="vertical")
+    help_text = HTMLWidget(
+        value=(
+            "Move the vertical line to select a signal range. "
+            "Select X-ray lines in the table to show their positions "
+            "on the signal."
+        )
+    )
+    help = ContainerWidget(children=[help_text], layout="accordion", titles=["Help"])
+    close = ButtonWidget(description="Close", tooltip="Close the widget.")
+
+    header = (
+        '<p style="padding-left: 1em; padding-right: 1em; '
+        "text-align: center; vertical-align: top; "
+        'font-weight:bold">{}</p>'
+    )
+    entry = (
+        '<p style="padding-left: 1em; padding-right: 1em; '
+        'text-align: center; vertical-align: top">{}</p>'
+    )
+
+    wdict["position"] = position
+    wdict["width"] = width
+    wdict["only_lines"] = only_lines
+    wdict["gb"] = gb
+    wdict["help"] = help
+    wdict["update"] = update
+    wdict["close"] = close
+
+    link((obj, "position"), (position, "value"))
+    link((obj, "width"), (width, "value"))
+    link((obj, "only_lines"), (only_lines, "value"))
+
+    header_items = [
+        HTMLWidget(value=header.format("Element")),
+        HTMLWidget(value=header.format("Line")),
+        HTMLWidget(value=header.format("Energy (keV)")),
+        HTMLWidget(value=header.format("Weight")),
+        HTMLWidget(value=header.format("Intensity")),
+    ]
+
+    def update_selected_elements(change):
+        element = change["owner"].description
+        initial_length = len(obj.selected_elements)
+        if change["new"]:
+            obj.selected_elements.add(element)
+        else:
+            if element in obj.selected_elements:
+                obj.selected_elements.remove(element)
+        if len(obj.selected_elements) != initial_length:
+            obj.update_markers()
+
+    @debounce(0.1)
+    def update_table(change):
+        lines_information = obj.get_lines_information()
+        items = header_items.copy()
+        if lines_information is not None:
+            for element_str in lines_information.keys():
+                element = lines_information[element_str]
+                for line in element.keys():
+                    line_info = element[line]
+                    btn = ToggleButtonWidget(value=False, description=element_str)
+                    btn.observe(update_selected_elements, names="value")
+                    wline = HTMLWidget(value=entry.format(str(line)))
+                    wenergy = HTMLWidget(value=entry.format(f"{line_info['energy_keV']:#.4g}"))
+                    wweight = HTMLWidget(value=entry.format(f"{line_info['weight']:#.4g}"))
+                    wintensity = HTMLWidget(value=entry.format(line_info["intensity"]))
+                    items.extend([btn, wline, wenergy, wweight, wintensity])
+        gb.children = items
+
+    position.observe(update_table, names="value")
+    width.observe(update_table, names="value")
+    only_lines.observe(update_table, names="value")
+    update.observe(update_table, names="clicks")
+
+    # Initialize the table at the current position
+    update_table(None)
+
+    def on_close_clicked(change):
+        obj.close()
+        if hasattr(box, "close"):
+            box.close()
+
+    close.observe(on_close_clicked, names="clicks")
+
+    energy_box = ContainerWidget(
+        children=[position, width, only_lines],
+        layout="horizontal",
+    )
+    box = ContainerWidget(
+        children=[
+            energy_box,
+            gb,
+            help,
+            ContainerWidget(children=[update, close], layout="horizontal"),
         ],
         layout="vertical",
     )

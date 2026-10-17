@@ -1,3 +1,6 @@
+import time
+from unittest.mock import patch
+
 import hyperspy.api as hs
 import numpy as np
 import pytest
@@ -9,6 +12,58 @@ from hyperspy.signal_tools import (
 from hyperspy.utils.baseline_removal_tool import BaselineRemoval
 
 from hyperspy_gui_anywidget.tests.utils import KWARGS
+
+pytest.importorskip("exspy")
+
+import exspy  # noqa: E402
+
+
+def test_lines_at_energy_interactive():
+    from exspy._signal_tools import EDSRange
+
+    s = exspy.data.EDS_TEM_FePt_nanoparticles()
+    er = EDSRange(s)
+    wd = er.gui(**KWARGS)["anywidget"]["wdict"]
+    assert wd["position"].value == pytest.approx(9.923874)
+    assert wd["width"].value == 0.2
+    assert wd["only_lines"].value == "all"
+
+    er.position = 6.4
+    assert wd["position"].value == 6.4
+    er.width = 0.3
+    assert wd["width"].value == 0.3
+    er.only_lines = "a"
+    assert wd["only_lines"].value == "a"
+
+    wd["position"].value = 8.0
+    assert er.position == 8.0
+    wd["width"].value = 0.25
+    assert er.width == 0.25
+
+    # Table rebuilds happen through the debounced callback, hence the sleeps
+    er.position = 6.4
+    er.only_lines = "a"
+    time.sleep(0.3)
+    assert len(wd["gb"].children) > 5
+    header_values = [w.value for w in wd["gb"].children[:5]]
+    for expected in ("Element", "Line", "Energy (keV)", "Weight", "Intensity"):
+        assert any(expected in h for h in header_values)
+
+    wd["update"].clicks += 1
+    time.sleep(0.3)
+    assert len(wd["gb"].children) > 5
+
+
+def test_lines_at_energy_close():
+    from exspy._signal_tools import EDSRange
+
+    s = exspy.data.EDS_TEM_FePt_nanoparticles()
+    er = EDSRange(s)
+    wd = er.gui(**KWARGS)["anywidget"]["wdict"]
+
+    with patch.object(er, "close", wraps=er.close) as mock_close:
+        wd["close"].clicks += 1
+        mock_close.assert_called_once()
 
 
 class TestTools:
