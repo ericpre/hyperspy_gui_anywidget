@@ -46,6 +46,8 @@ def test_lines_at_energy_interactive():
     er.only_lines = "a"
     time.sleep(0.3)
     assert len(wd["gb"].children) > 5
+    # The table is laid out with one column per field
+    assert wd["gb"].layout.grid_template_columns == "70px 70px 100px 100px 100px"
     header_values = [w.value for w in wd["gb"].children[:5]]
     for expected in ("Element", "Line", "Energy (keV)", "Weight", "Intensity"):
         assert any(expected in h for h in header_values)

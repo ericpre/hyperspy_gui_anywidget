@@ -480,7 +480,11 @@ def print_lines_table_aw(obj, **kwargs):
     width = BoundedFloatTextWidget(min=0, description="Width (keV)", step=0.1)
     only_lines = enum2dropdown(obj.traits()["only_lines"], description="Only lines")
     update = ButtonWidget(description="Refresh table")
-    gb = ContainerWidget(children=[], layout="vertical")
+    gb = ContainerWidget(
+        children=[],
+        layout="grid",
+        grid_template_columns="70px 70px 100px 100px 100px",
+    )
     help_text = HTMLWidget(
         value=(
             "Move the vertical line to select a signal range. "
@@ -491,15 +495,11 @@ def print_lines_table_aw(obj, **kwargs):
     help = ContainerWidget(children=[help_text], layout="accordion", titles=["Help"])
     close = ButtonWidget(description="Close", tooltip="Close the widget.")
 
-    header = (
-        '<p style="padding-left: 1em; padding-right: 1em; '
-        "text-align: center; vertical-align: top; "
-        'font-weight:bold">{}</p>'
-    )
-    entry = (
-        '<p style="padding-left: 1em; padding-right: 1em; '
-        'text-align: center; vertical-align: top">{}</p>'
-    )
+    # Tight cell styles: the grid columns are narrow, so padding is removed
+    # compared to the EELS edges table entries.
+    header = '<p style="text-align: center; padding: 0px; margin: 0px; font-weight:bold">{}</p>'
+    entry = '<p style="text-align: center; padding: 0px; margin: 0px">{}</p>'
+    entry_left = '<p style="text-align: left; padding: 0px; margin: 0px">{}</p>'
 
     wdict["position"] = position
     wdict["width"] = width
@@ -546,7 +546,7 @@ def print_lines_table_aw(obj, **kwargs):
                     wline = HTMLWidget(value=entry.format(str(line)))
                     wenergy = HTMLWidget(value=entry.format(f"{line_info['energy_keV']:#.4g}"))
                     wweight = HTMLWidget(value=entry.format(f"{line_info['weight']:#.4g}"))
-                    wintensity = HTMLWidget(value=entry.format(line_info["intensity"]))
+                    wintensity = HTMLWidget(value=entry_left.format(line_info["intensity"]))
                     items.extend([btn, wline, wenergy, wweight, wintensity])
         gb.children = items
 
