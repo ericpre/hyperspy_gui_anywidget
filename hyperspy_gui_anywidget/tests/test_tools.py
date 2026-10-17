@@ -24,7 +24,8 @@ def test_lines_at_energy_interactive():
     s = exspy.data.EDS_TEM_FePt_nanoparticles()
     er = EDSRange(s)
     wd = er.gui(**KWARGS)["anywidget"]["wdict"]
-    assert wd["position"].value == pytest.approx(9.923874)
+    assert wd["position"].value == 9.92
+    assert wd["position"].decimals == 2
     assert wd["width"].value == 0.2
     assert wd["only_lines"].value == "all"
 

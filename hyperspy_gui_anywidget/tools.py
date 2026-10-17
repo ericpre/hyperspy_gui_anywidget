@@ -476,7 +476,7 @@ def print_lines_table_aw(obj, **kwargs):
         ``display=False``, otherwise ``None`` (widget displayed inline).
     """
     wdict = {}
-    position = BoundedFloatTextWidget(min=0, description="Position (keV)", step=0.1)
+    position = BoundedFloatTextWidget(min=0, description="Position (keV)", step=0.01, decimals=2)
     width = BoundedFloatTextWidget(min=0, description="Width (keV)", step=0.1)
     only_lines = enum2dropdown(obj.traits()["only_lines"], description="Only lines")
     update = ButtonWidget(description="Refresh table")
