@@ -985,17 +985,17 @@ def _flatten_widget_tree(children):
     return configs
 
 
-def _make_flat_container(children, layout, **kwargs):
+def _build_flat_configs(children, layout, **kwargs):
+    """Build the FlatContainer config stream for a layout and children."""
     if layout == "accordion":
         titles = kwargs.get("titles", [])
-        configs = _flatten_widget_tree(children)
         configs = (
             [{"type": "accordion_start", "titles": list(titles)}]
-            + configs
+            + _flatten_widget_tree(children)
             + [{"type": "accordion_end"}]
         )
-        layout = "vertical"
-    elif layout == "tabs":
+        return configs, "vertical"
+    if layout == "tabs":
         titles = kwargs.get("titles", [])
         configs = []
         for i, child in enumerate(children):
@@ -1003,8 +1003,8 @@ def _make_flat_container(children, layout, **kwargs):
             configs.append({"type": "tab_start", "title": title})
             configs.extend(_flatten_widget_tree([child]))
             configs.append({"type": "tab_end"})
-        layout = "vertical"
-    elif layout == "grid":
+        return configs, "vertical"
+    if layout == "grid":
         # Wrap the grid into layout markers so the root FlatContainer stays
         # a flex column while a nested container renders the grid cells.
         configs = [
@@ -1016,23 +1016,66 @@ def _make_flat_container(children, layout, **kwargs):
         ]
         configs.extend(_flatten_widget_tree(children))
         configs.append({"type": "layout_end"})
-        layout = "vertical"
-    else:
-        configs = _flatten_widget_tree(children)
-    container = FlatContainer(_children_config=configs, _layout=layout)
-    container._source_children = children
-    _wire_flat_sync(container, children)
+        return configs, "vertical"
+    return _flatten_widget_tree(children), layout
+
+
+def _make_flat_container(children, layout, **kwargs):
+    configs, final_layout = _build_flat_configs(children, layout, **kwargs)
+    container = FlatContainer(_children_config=configs, _layout=final_layout)
+    # Keep the build arguments so dynamically updating the children can
+    # rebuild the config stream the same way.
+    container._source_children = list(children)
+    container._layout_spec = {"layout": layout, "kwargs": dict(kwargs)}
+    _wire_flat_sync(container, container._source_children)
     return container
 
 
+def _rebuild_flat_configs(container):
+    """Rebuild a flat container config stream from its current children."""
+    spec = getattr(container, "_layout_spec", {"layout": "vertical", "kwargs": {}})
+    configs, _ = _build_flat_configs(
+        list(getattr(container, "_source_children", [])),
+        spec["layout"],
+        **spec["kwargs"],
+    )
+    container._children_config = configs
+
+
 def _wire_flat_sync(container, children):
-    """Wire bidirectional sync between FlatContainer and child widgets."""
+    """Wire bidirectional sync between FlatContainer and child widgets.
+
+    Idempotent: safe to call again after the container children change; the
+    sync state is kept on the container so observers are never registered
+    twice for the same child widget.
+    """
+    children = list(children)
+    container._source_children = children
+
+    if not hasattr(container, "_flat_idx_map"):
+        container._flat_idx_map = {}
+        container._flat_applying = False
+        container._flat_observed_map = {}
+        container._flat_nested_observed = set()
+
+        def _frontend_to_python(change):
+            if container._flat_applying:
+                return
+            container._flat_applying = True
+            try:
+                old_vals = change.get("old", {})
+                for cfg_id, new_value in change["new"].items():
+                    widget = container._flat_idx_map.get(cfg_id)
+                    if widget and old_vals.get(cfg_id) != new_value:
+                        _apply_value(widget, new_value)
+            finally:
+                container._flat_applying = False
+
+        container.observe(_frontend_to_python, names="_children_values")
+
     idx_map = {}
-    leaf_idx = 0
-    _applying = False  # re-entrancy guard
 
     def _map_children(kids):
-        nonlocal leaf_idx
         for child in kids:
             if isinstance(child, (VBox, HBox)):
                 _map_children(child.children)
@@ -1041,28 +1084,15 @@ def _wire_flat_sync(container, children):
                 # leaf widgets that are embedded by _flatten_widget_tree.
                 _map_children(child._source_children)
             else:
-                idx_map[str(id(child))] = (leaf_idx, child)
-                leaf_idx += 1
+                idx_map[str(id(child))] = child
 
     _map_children(children)
+    container._flat_idx_map = idx_map
 
-    def _frontend_to_python(change):
-        nonlocal _applying
-        if _applying:
-            return
-        _applying = True
-        try:
-            old_vals = change.get("old", {})
-            for cfg_id, new_value in change["new"].items():
-                if cfg_id in idx_map and old_vals.get(cfg_id) != new_value:
-                    _, widget = idx_map[cfg_id]
-                    _apply_value(widget, new_value)
-        finally:
-            _applying = False
-
-    container.observe(_frontend_to_python, names="_children_values")
-
-    for cfg_id, (_, widget) in idx_map.items():
+    for cfg_id, widget in idx_map.items():
+        if container._flat_observed_map.get(cfg_id) is widget:
+            continue
+        container._flat_observed_map[cfg_id] = widget
 
         def _make_observer(cid, w):
             def _python_to_frontend(change):
@@ -1087,6 +1117,25 @@ def _wire_flat_sync(container, children):
                 return _cu_to_frontend
 
             widget.observe(_make_cu_observer(cu_key, widget), names="continuous_update")
+
+    for child in children:
+        if not isinstance(child, FlatContainer):
+            continue
+        if id(child) in container._flat_nested_observed:
+            continue
+        container._flat_nested_observed.add(id(child))
+
+        def _make_nested_rebuilder(parent):
+            def _propagate_flat_rebuild(change):
+                # A nested flat container rebuilt its config stream, so the
+                # parent re-flattens to propagate the change to the rendered
+                # root container.
+                _rebuild_flat_configs(parent)
+                _wire_flat_sync(parent, parent._source_children)
+
+            return _propagate_flat_rebuild
+
+        child.observe(_make_nested_rebuilder(container), names="_children_config")
 
 
 def _extract_value(widget):
@@ -1117,9 +1166,6 @@ def _apply_value(widget, value):
 class FlatContainer(AnyWidget):
     _esm = """
     function render({ model, el }) {
-      const configs = model.get("_children_config");
-      const values = model.get("_children_values") || {};
-      const layout = model.get("_layout") || "vertical";
 
       function fmt(v, format) {
         if (typeof v !== "number") return v;
@@ -1173,7 +1219,6 @@ class FlatContainer(AnyWidget):
       });
 
       el.style.display = "flex";
-      el.style.flexDirection = layout === "horizontal" ? "row" : "column";
       el.style.gap = "10px";
       el.style.flexWrap = "wrap";
 
@@ -1184,7 +1229,6 @@ class FlatContainer(AnyWidget):
       const _onMouseUp = () => draggingSliders.clear();
       window.addEventListener("mouseup", _onMouseUp);
       window.addEventListener("touchend", _onMouseUp);
-      const stack = [{ parent: el, layout: layout }];
 
       function makeRow(cfg) {
         const row = document.createElement("div");
@@ -1239,492 +1283,504 @@ class FlatContainer(AnyWidget):
         updateValues(model.get("_children_values"));
       });
 
-      let tabState = null;
+      function renderConfigs() {
+        const configs = model.get("_children_config");
+        const layout = model.get("_layout") || "vertical";
+        el.style.flexDirection = layout === "horizontal" ? "row" : "column";
+        el.replaceChildren();
+        for (const key of Object.keys(idToEl)) delete idToEl[key];
+        draggingSliders.clear();
+        _pendingSentBySlider.clear();
+        _cuState.clear();
+        delete el._tabGroup;
+        const stack = [{ parent: el, layout: layout }];
+        for (const cfg of configs) {
+          if (cfg.type === "tab_start") {
+            const tabContentEl = document.createElement("div");
+            const parent = stack[stack.length - 1].parent;
 
-      for (const cfg of configs) {
-        if (cfg.type === "tab_start") {
-          const tabContentEl = document.createElement("div");
-          const parent = stack[stack.length - 1].parent;
-
-          stack.push({ parent: tabContentEl, layout: "vertical", _tabData: { parent: parent, title: cfg.title, tabEl: tabContentEl } });
-          continue;
-        }
-        if (cfg.type === "tab_end") {
-          const entry = stack.pop();
-          if (!entry._tabData) continue;
-          const { parent, title, tabEl } = entry._tabData;
-          if (!parent._tabGroup) {
-            parent._tabGroup = {
-              headers: document.createElement("div"),
-              content: document.createElement("div"),
-              tabs: [],
-              activeIdx: 0,
-            };
-            parent._tabGroup.headers.style.display = "flex";
-            parent._tabGroup.headers.style.borderBottom = "1px solid #ccc";
-            parent._tabGroup.content.style.padding = "10px 0";
-            parent.appendChild(parent._tabGroup.headers);
-            parent.appendChild(parent._tabGroup.content);
+            stack.push({ parent: tabContentEl, layout: "vertical", _tabData: { parent: parent, title: cfg.title, tabEl: tabContentEl } });
+            continue;
           }
-          const group = parent._tabGroup;
-          const idx = group.tabs.length;
-          group.tabs.push({ title: title, el: tabEl });
-
-          const btn = document.createElement("button");
-          btn.textContent = title;
-          btn.style.padding = "8px 16px";
-          btn.style.border = "none";
-          btn.style.background = "transparent";
-          btn.style.cursor = "pointer";
-          btn.addEventListener("click", () => {
-            group.activeIdx = idx;
-            group.content.innerHTML = "";
-            group.content.appendChild(group.tabs[idx].el);
-            group.headers.querySelectorAll("button").forEach((b, i) => {
-              b.style.background = i === idx ? "#e0e0e0" : "transparent";
-              b.style.borderBottom = i === idx ? "2px solid #3366cc" : "none";
-            });
-          });
-          group.headers.appendChild(btn);
-          if (idx === 0) {
-            group.content.appendChild(tabEl);
-            btn.style.background = "#e0e0e0";
-            btn.style.borderBottom = "2px solid #3366cc";
-          }
-          continue;
-        }
-        if (cfg.type === "accordion_start") {
-          const titles = cfg.titles || [];
-          const accordionEl = document.createElement("div");
-          accordionEl.style.display = "flex";
-          accordionEl.style.flexDirection = "column";
-          accordionEl.style.gap = "2px";
-          accordionEl.style.width = "100%";
-
-          const parent = stack[stack.length - 1].parent;
-          parent.appendChild(accordionEl);
-
-          stack.push({ parent: accordionEl, layout: "vertical", _accordion: { titles, sections: [] } });
-          continue;
-        }
-        if (cfg.type === "accordion_end") {
-          const entry = stack.pop();
-          if (!entry._accordion) continue;
-          const { titles } = entry._accordion;
-          const accordionEl = entry.parent;
-
-          const childNodes = Array.from(accordionEl.children);
-          accordionEl.innerHTML = "";
-
-          childNodes.forEach((childEl, i) => {
-            const header = document.createElement("button");
-            header.textContent = (titles[i] !== undefined ? String(titles[i]) : "Section " + (i + 1));
-            header.style.width = "100%";
-            header.style.textAlign = "left";
-            header.style.padding = "8px 12px";
-            header.style.border = "1px solid #ccc";
-            header.style.background = "#f5f5f5";
-            header.style.cursor = "pointer";
-            header.style.fontSize = "13px";
-            header.style.fontWeight = "500";
-
-            const content = document.createElement("div");
-            content.style.display = "none";
-            content.style.padding = "8px";
-            content.style.border = "1px solid #ccc";
-            content.style.borderTop = "none";
-            content.style.background = "#fff";
-            content.appendChild(childEl);
-
-            header.addEventListener("click", () => {
-              const isOpen = content.style.display !== "none";
-              content.style.display = isOpen ? "none" : "block";
-              header.style.background = isOpen ? "#f5f5f5" : "#e8e8e8";
-            });
-
-            accordionEl.appendChild(header);
-            accordionEl.appendChild(content);
-
-            if (i === 0) {
-              content.style.display = "block";
-              header.style.background = "#e8e8e8";
+          if (cfg.type === "tab_end") {
+            const entry = stack.pop();
+            if (!entry._tabData) continue;
+            const { parent, title, tabEl } = entry._tabData;
+            if (!parent._tabGroup) {
+              parent._tabGroup = {
+                headers: document.createElement("div"),
+                content: document.createElement("div"),
+                tabs: [],
+                activeIdx: 0,
+              };
+              parent._tabGroup.headers.style.display = "flex";
+              parent._tabGroup.headers.style.borderBottom = "1px solid #ccc";
+              parent._tabGroup.content.style.padding = "10px 0";
+              parent.appendChild(parent._tabGroup.headers);
+              parent.appendChild(parent._tabGroup.content);
             }
-          });
-          continue;
-        }
-        if (cfg.type === "layout_start") {
-          const container = document.createElement("div");
-          if (cfg.direction === "grid") {
-            // Grid containers rely on the column template carried in the
-            // config so the flattened table matches the Jupyter GridBox.
-            container.style.display = "grid";
-            if (cfg.grid_template_columns) {
-              container.style.gridTemplateColumns = cfg.grid_template_columns;
+            const group = parent._tabGroup;
+            const idx = group.tabs.length;
+            group.tabs.push({ title: title, el: tabEl });
+
+            const btn = document.createElement("button");
+            btn.textContent = title;
+            btn.style.padding = "8px 16px";
+            btn.style.border = "none";
+            btn.style.background = "transparent";
+            btn.style.cursor = "pointer";
+            btn.addEventListener("click", () => {
+              group.activeIdx = idx;
+              group.content.innerHTML = "";
+              group.content.appendChild(group.tabs[idx].el);
+              group.headers.querySelectorAll("button").forEach((b, i) => {
+                b.style.background = i === idx ? "#e0e0e0" : "transparent";
+                b.style.borderBottom = i === idx ? "2px solid #3366cc" : "none";
+              });
+            });
+            group.headers.appendChild(btn);
+            if (idx === 0) {
+              group.content.appendChild(tabEl);
+              btn.style.background = "#e0e0e0";
+              btn.style.borderBottom = "2px solid #3366cc";
             }
-          } else {
-            container.style.display = "flex";
-            container.style.flexDirection = cfg.direction;
-            container.style.gap = "10px";
-            container.style.flexWrap = "wrap";
+            continue;
           }
+          if (cfg.type === "accordion_start") {
+            const titles = cfg.titles || [];
+            const accordionEl = document.createElement("div");
+            accordionEl.style.display = "flex";
+            accordionEl.style.flexDirection = "column";
+            accordionEl.style.gap = "2px";
+            accordionEl.style.width = "100%";
+
+            const parent = stack[stack.length - 1].parent;
+            parent.appendChild(accordionEl);
+
+            stack.push({ parent: accordionEl, layout: "vertical", _accordion: { titles, sections: [] } });
+            continue;
+          }
+          if (cfg.type === "accordion_end") {
+            const entry = stack.pop();
+            if (!entry._accordion) continue;
+            const { titles } = entry._accordion;
+            const accordionEl = entry.parent;
+
+            const childNodes = Array.from(accordionEl.children);
+            accordionEl.innerHTML = "";
+
+            childNodes.forEach((childEl, i) => {
+              const header = document.createElement("button");
+              header.textContent = (titles[i] !== undefined ? String(titles[i]) : "Section " + (i + 1));
+              header.style.width = "100%";
+              header.style.textAlign = "left";
+              header.style.padding = "8px 12px";
+              header.style.border = "1px solid #ccc";
+              header.style.background = "#f5f5f5";
+              header.style.cursor = "pointer";
+              header.style.fontSize = "13px";
+              header.style.fontWeight = "500";
+
+              const content = document.createElement("div");
+              content.style.display = "none";
+              content.style.padding = "8px";
+              content.style.border = "1px solid #ccc";
+              content.style.borderTop = "none";
+              content.style.background = "#fff";
+              content.appendChild(childEl);
+
+              header.addEventListener("click", () => {
+                const isOpen = content.style.display !== "none";
+                content.style.display = isOpen ? "none" : "block";
+                header.style.background = isOpen ? "#f5f5f5" : "#e8e8e8";
+              });
+
+              accordionEl.appendChild(header);
+              accordionEl.appendChild(content);
+
+              if (i === 0) {
+                content.style.display = "block";
+                header.style.background = "#e8e8e8";
+              }
+            });
+            continue;
+          }
+          if (cfg.type === "layout_start") {
+            const container = document.createElement("div");
+            if (cfg.direction === "grid") {
+              // Grid containers rely on the column template carried in the
+              // config so the flattened table matches the Jupyter GridBox.
+              container.style.display = "grid";
+              if (cfg.grid_template_columns) {
+                container.style.gridTemplateColumns = cfg.grid_template_columns;
+              }
+            } else {
+              container.style.display = "flex";
+              container.style.flexDirection = cfg.direction;
+              container.style.gap = "10px";
+              container.style.flexWrap = "wrap";
+            }
+            const current = stack[stack.length - 1];
+            current.parent.appendChild(container);
+            stack.push({ parent: container, layout: cfg.direction });
+            continue;
+          }
+          if (cfg.type === "layout_end") {
+            stack.pop();
+            continue;
+          }
+
           const current = stack[stack.length - 1];
-          current.parent.appendChild(container);
-          stack.push({ parent: container, layout: cfg.direction });
-          continue;
-        }
-        if (cfg.type === "layout_end") {
-          stack.pop();
-          continue;
-        }
+          const parent = current.parent;
 
-        const current = stack[stack.length - 1];
-        const parent = current.parent;
+          if (cfg.type === "label") {
+            const span = document.createElement("span");
+            span.textContent = cfg.value;
+            parent.appendChild(span);
+            idToEl[cfg.id] = { el: span, cfg };
+            continue;
+          }
 
-        if (cfg.type === "label") {
-          const span = document.createElement("span");
-          span.textContent = cfg.value;
-          parent.appendChild(span);
-          idToEl[cfg.id] = { el: span, cfg };
-          continue;
-        }
+          if (cfg.type === "html") {
+            const div = document.createElement("div");
+            div.innerHTML = cfg.value;
+            parent.appendChild(div);
+            idToEl[cfg.id] = { el: div, cfg };
+            continue;
+          }
 
-        if (cfg.type === "html") {
-          const div = document.createElement("div");
-          div.innerHTML = cfg.value;
-          parent.appendChild(div);
-          idToEl[cfg.id] = { el: div, cfg };
-          continue;
-        }
+          if (cfg.type === "button") {
+            const btn = document.createElement("button");
+            btn.textContent = cfg.label;
+            btn.title = cfg.tooltip || "";
+            btn.addEventListener("click", () => {
+              const prev = (model.get("_children_values") || {})[cfg.id] || 0;
+              model.set("_children_values", { [cfg.id]: prev + 1 });
+              model.save_changes();
+            });
+            parent.appendChild(btn);
+            idToEl[cfg.id] = { el: btn, cfg };
+            continue;
+          }
 
-        if (cfg.type === "button") {
-          const btn = document.createElement("button");
-          btn.textContent = cfg.label;
-          btn.title = cfg.tooltip || "";
-          btn.addEventListener("click", () => {
-            const prev = (model.get("_children_values") || {})[cfg.id] || 0;
-            model.set("_children_values", { [cfg.id]: prev + 1 });
-            model.save_changes();
-          });
-          parent.appendChild(btn);
-          idToEl[cfg.id] = { el: btn, cfg };
-          continue;
-        }
+          if (cfg.type === "toggle") {
+            const btn = document.createElement("button");
+            btn.textContent = cfg.label;
+            btn.style.background = cfg.value ? "#2196F3" : "#e0e0e0";
+            btn.style.color = cfg.value ? "white" : "black";
+            btn.addEventListener("click", () => {
+              const cur = (model.get("_children_values") || {})[cfg.id] ?? cfg.value;
+              model.set("_children_values", { [cfg.id]: !cur });
+              model.save_changes();
+            });
+            parent.appendChild(btn);
+            idToEl[cfg.id] = { el: btn, cfg };
+            continue;
+          }
 
-        if (cfg.type === "toggle") {
-          const btn = document.createElement("button");
-          btn.textContent = cfg.label;
-          btn.style.background = cfg.value ? "#2196F3" : "#e0e0e0";
-          btn.style.color = cfg.value ? "white" : "black";
-          btn.addEventListener("click", () => {
-            const cur = (model.get("_children_values") || {})[cfg.id] ?? cfg.value;
-            model.set("_children_values", { [cfg.id]: !cur });
-            model.save_changes();
-          });
-          parent.appendChild(btn);
-          idToEl[cfg.id] = { el: btn, cfg };
-          continue;
-        }
-
-        if (cfg.type === "progress") {
-          const row = makeRow(cfg);
-          const label = document.createElement("label");
-          label.textContent = cfg.label;
-          label.style.minWidth = "120px";
-          label.style.textAlign = "right";
-          label.style.marginRight = "5px";
-          row.appendChild(label);
-          const prog = document.createElement("progress");
-          prog.value = cfg.value;
-          prog.max = cfg.max;
-          prog.style.flex = "1";
-          row.appendChild(prog);
-          const span = document.createElement("span");
-          span.textContent = cfg.value + "/" + cfg.max;
-          span.className = "flat-readout";
-          span.style.minWidth = "40px";
-          span.style.textAlign = "right";
-          row.appendChild(span);
-          parent.appendChild(row);
-          idToEl[cfg.id] = { el: prog, cfg };
-          continue;
-        }
-
-        if (cfg.type === "dropdown") {
-          const row = makeRow(cfg);
-          if (cfg.label) {
+          if (cfg.type === "progress") {
+            const row = makeRow(cfg);
             const label = document.createElement("label");
             label.textContent = cfg.label;
             label.style.minWidth = "120px";
-          label.style.textAlign = "right";
-          label.style.marginRight = "5px";
+            label.style.textAlign = "right";
+            label.style.marginRight = "5px";
+            row.appendChild(label);
+            const prog = document.createElement("progress");
+            prog.value = cfg.value;
+            prog.max = cfg.max;
+            prog.style.flex = "1";
+            row.appendChild(prog);
+            const span = document.createElement("span");
+            span.textContent = cfg.value + "/" + cfg.max;
+            span.className = "flat-readout";
+            span.style.minWidth = "40px";
+            span.style.textAlign = "right";
+            row.appendChild(span);
+            parent.appendChild(row);
+            idToEl[cfg.id] = { el: prog, cfg };
+            continue;
+          }
+
+          if (cfg.type === "dropdown") {
+            const row = makeRow(cfg);
+            if (cfg.label) {
+              const label = document.createElement("label");
+              label.textContent = cfg.label;
+              label.style.minWidth = "120px";
+            label.style.textAlign = "right";
+            label.style.marginRight = "5px";
+              row.appendChild(label);
+            }
+            if (cfg.visible === false) {
+              row.style.display = "none";
+            }
+            const select = document.createElement("select");
+            select.style.flex = "0 0 160px";
+            select.style.width = "160px";
+            select.style.maxWidth = "160px";
+            for (const opt of (cfg.options || [])) {
+              const option = document.createElement("option");
+              option.value = opt;
+              option.textContent = opt;
+              if (opt === cfg.value) option.selected = true;
+              select.appendChild(option);
+            }
+            select.addEventListener("change", () => {
+              model.set("_children_values", { [cfg.id]: select.value });
+              model.save_changes();
+            });
+            row.appendChild(select);
+            parent.appendChild(row);
+            idToEl[cfg.id] = { el: select, cfg };
+            continue;
+          }
+
+          if (cfg.type === "sandwich") {
+            const row = makeRow(cfg);
+            const l1 = document.createElement("span");
+            l1.textContent = cfg.label1;
+            l1.style.whiteSpace = "nowrap";
+            l1.style.minWidth = "120px";
+            l1.style.textAlign = "right";
+            l1.style.marginRight = "5px";
+            row.appendChild(l1);
+            const input = document.createElement("input");
+            input.type = typeof cfg.value === "number" ? "number" : "text";
+            input.value = cfg.value;
+            input.style.flex = "0 0 160px";
+            input.style.width = "160px";
+            input.style.maxWidth = "160px";
+            row.appendChild(input);
+            const l2 = document.createElement("span");
+            l2.textContent = cfg.label2;
+            l2.style.whiteSpace = "nowrap";
+            l2.style.minWidth = "120px";
+            l2.style.textAlign = "left";
+            l2.style.marginLeft = "5px";
+            row.appendChild(l2);
+            parent.appendChild(row);
+
+            input.addEventListener("change", () => {
+              const val = typeof cfg.value === "number" ? parseFloat(input.value) : input.value;
+              model.set("_children_values", { [cfg.id]: val });
+              model.save_changes();
+            });
+            idToEl[cfg.id] = { el: input, cfg };
+            continue;
+          }
+
+          if (cfg.type === "labeled") {
+            const row = makeRow(cfg);
+            const label = document.createElement("span");
+            label.textContent = cfg.label;
+            label.style.whiteSpace = "nowrap";
+            row.appendChild(label);
+            const input = document.createElement("input");
+            input.type = typeof cfg.value === "number" ? "number" : "text";
+            input.value = cfg.value;
+            input.style.flex = "0 0 160px";
+            input.style.width = "160px";
+            input.style.maxWidth = "160px";
+            row.appendChild(input);
+            parent.appendChild(row);
+
+            input.addEventListener("change", () => {
+              const val = typeof cfg.value === "number" ? parseFloat(input.value) : input.value;
+              model.set("_children_values", { [cfg.id]: val });
+              model.save_changes();
+            });
+            idToEl[cfg.id] = { el: input, cfg };
+            continue;
+          }
+
+          if (cfg.type === "range_slider") {
+            const row = makeRow(cfg);
+            const label = document.createElement("label");
+            label.textContent = cfg.label;
+            label.style.minWidth = "120px";
+            label.style.textAlign = "right";
+            label.style.marginRight = "5px";
+            row.appendChild(label);
+            const rangeVal = cfg.value || [0, 0];
+            const low = document.createElement("input");
+            low.type = "number";
+            low.value = rangeVal[0];
+            low.step = cfg.step;
+            low.style.flex = "1";
+            row.appendChild(low);
+            const dash = document.createElement("span");
+            dash.textContent = "-";
+            row.appendChild(dash);
+            const high = document.createElement("input");
+            high.type = "number";
+            high.value = rangeVal[1];
+            high.step = cfg.step;
+            high.style.flex = "1";
+            row.appendChild(high);
+            parent.appendChild(row);
+
+            function updateRange() {
+              model.set("_children_values", { [cfg.id]: [parseFloat(low.value), parseFloat(high.value)] });
+              model.save_changes();
+            }
+            low.addEventListener("change", updateRange);
+            high.addEventListener("change", updateRange);
+            idToEl[cfg.id] = { el: low, cfg };
+            continue;
+          }
+
+          const row = makeRow(cfg);
+          if (cfg.label !== undefined && cfg.label !== "") {
+            const label = document.createElement("label");
+            label.textContent = cfg.label;
+            label.style.minWidth = "120px";
+            label.style.textAlign = "right";
+            label.style.marginRight = "5px";
             row.appendChild(label);
           }
           if (cfg.visible === false) {
             row.style.display = "none";
           }
-          const select = document.createElement("select");
-          select.style.flex = "0 0 160px";
-          select.style.width = "160px";
-          select.style.maxWidth = "160px";
-          for (const opt of (cfg.options || [])) {
-            const option = document.createElement("option");
-            option.value = opt;
-            option.textContent = opt;
-            if (opt === cfg.value) option.selected = true;
-            select.appendChild(option);
-          }
-          select.addEventListener("change", () => {
-            model.set("_children_values", { [cfg.id]: select.value });
-            model.save_changes();
-          });
-          row.appendChild(select);
-          parent.appendChild(row);
-          idToEl[cfg.id] = { el: select, cfg };
-          continue;
-        }
 
-        if (cfg.type === "sandwich") {
-          const row = makeRow(cfg);
-          const l1 = document.createElement("span");
-          l1.textContent = cfg.label1;
-          l1.style.whiteSpace = "nowrap";
-          l1.style.minWidth = "120px";
-          l1.style.textAlign = "right";
-          l1.style.marginRight = "5px";
-          row.appendChild(l1);
-          const input = document.createElement("input");
-          input.type = typeof cfg.value === "number" ? "number" : "text";
-          input.value = cfg.value;
-          input.style.flex = "0 0 160px";
-          input.style.width = "160px";
-          input.style.maxWidth = "160px";
-          row.appendChild(input);
-          const l2 = document.createElement("span");
-          l2.textContent = cfg.label2;
-          l2.style.whiteSpace = "nowrap";
-          l2.style.minWidth = "120px";
-          l2.style.textAlign = "left";
-          l2.style.marginLeft = "5px";
-          row.appendChild(l2);
-          parent.appendChild(row);
+          let input;
+          if (cfg.type === "number") {
+            input = document.createElement("input");
+            input.type = "number";
+            input.step = cfg.step || "any";
+            input.value =
+              cfg.decimals !== null && cfg.decimals !== undefined
+                ? Number(cfg.value).toFixed(cfg.decimals)
+                : cfg.value;
+            if (cfg.min !== null && cfg.min !== undefined) input.min = cfg.min;
+            if (cfg.max !== null && cfg.max !== undefined) input.max = cfg.max;
+            input.disabled = cfg.disabled;
+          } else if (cfg.type === "checkbox") {
+            input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = cfg.value;
+          } else if (cfg.type === "slider") {
+            input = document.createElement("input");
+            input.type = "range";
+            input.min = cfg.min;
+            input.max = cfg.max;
+            input.step = cfg.step;
+            input.value = cfg.value;
+            if (cfg.disabled) input.disabled = true;
+            const readout = document.createElement("span");
+            readout.textContent = fmt(cfg.value, cfg.readout_format);
+            readout.className = "flat-readout";
+            readout.style.minWidth = "40px";
+            readout.style.textAlign = "right";
+            row.appendChild(readout);
 
-          input.addEventListener("change", () => {
-            const val = typeof cfg.value === "number" ? parseFloat(input.value) : input.value;
-            model.set("_children_values", { [cfg.id]: val });
-            model.save_changes();
-          });
-          idToEl[cfg.id] = { el: input, cfg };
-          continue;
-        }
-
-        if (cfg.type === "labeled") {
-          const row = makeRow(cfg);
-          const label = document.createElement("span");
-          label.textContent = cfg.label;
-          label.style.whiteSpace = "nowrap";
-          row.appendChild(label);
-          const input = document.createElement("input");
-          input.type = typeof cfg.value === "number" ? "number" : "text";
-          input.value = cfg.value;
-          input.style.flex = "0 0 160px";
-          input.style.width = "160px";
-          input.style.maxWidth = "160px";
-          row.appendChild(input);
-          parent.appendChild(row);
-
-          input.addEventListener("change", () => {
-            const val = typeof cfg.value === "number" ? parseFloat(input.value) : input.value;
-            model.set("_children_values", { [cfg.id]: val });
-            model.save_changes();
-          });
-          idToEl[cfg.id] = { el: input, cfg };
-          continue;
-        }
-
-        if (cfg.type === "range_slider") {
-          const row = makeRow(cfg);
-          const label = document.createElement("label");
-          label.textContent = cfg.label;
-          label.style.minWidth = "120px";
-          label.style.textAlign = "right";
-          label.style.marginRight = "5px";
-          row.appendChild(label);
-          const rangeVal = cfg.value || [0, 0];
-          const low = document.createElement("input");
-          low.type = "number";
-          low.value = rangeVal[0];
-          low.step = cfg.step;
-          low.style.flex = "1";
-          row.appendChild(low);
-          const dash = document.createElement("span");
-          dash.textContent = "-";
-          row.appendChild(dash);
-          const high = document.createElement("input");
-          high.type = "number";
-          high.value = rangeVal[1];
-          high.step = cfg.step;
-          high.style.flex = "1";
-          row.appendChild(high);
-          parent.appendChild(row);
-
-          function updateRange() {
-            model.set("_children_values", { [cfg.id]: [parseFloat(low.value), parseFloat(high.value)] });
-            model.save_changes();
-          }
-          low.addEventListener("change", updateRange);
-          high.addEventListener("change", updateRange);
-          idToEl[cfg.id] = { el: low, cfg };
-          continue;
-        }
-
-        const row = makeRow(cfg);
-        if (cfg.label !== undefined && cfg.label !== "") {
-          const label = document.createElement("label");
-          label.textContent = cfg.label;
-          label.style.minWidth = "120px";
-          label.style.textAlign = "right";
-          label.style.marginRight = "5px";
-          row.appendChild(label);
-        }
-        if (cfg.visible === false) {
-          row.style.display = "none";
-        }
-
-        let input;
-        if (cfg.type === "number") {
-          input = document.createElement("input");
-          input.type = "number";
-          input.step = cfg.step || "any";
-          input.value =
-            cfg.decimals !== null && cfg.decimals !== undefined
-              ? Number(cfg.value).toFixed(cfg.decimals)
-              : cfg.value;
-          if (cfg.min !== null && cfg.min !== undefined) input.min = cfg.min;
-          if (cfg.max !== null && cfg.max !== undefined) input.max = cfg.max;
-          input.disabled = cfg.disabled;
-        } else if (cfg.type === "checkbox") {
-          input = document.createElement("input");
-          input.type = "checkbox";
-          input.checked = cfg.value;
-        } else if (cfg.type === "slider") {
-          input = document.createElement("input");
-          input.type = "range";
-          input.min = cfg.min;
-          input.max = cfg.max;
-          input.step = cfg.step;
-          input.value = cfg.value;
-          if (cfg.disabled) input.disabled = true;
-          const readout = document.createElement("span");
-          readout.textContent = fmt(cfg.value, cfg.readout_format);
-          readout.className = "flat-readout";
-          readout.style.minWidth = "40px";
-          readout.style.textAlign = "right";
-          row.appendChild(readout);
-
-          function sliderUpdate() {
-            const val = cfg.type === "slider" && Number.isInteger(cfg.step) && Number.isInteger(cfg.value)
-              ? parseInt(input.value) : parseFloat(input.value);
-            const newValues = { ...model.get("_children_values") };
-            newValues[cfg.id] = val;
-            model.set("_children_values", newValues);
-            model.save_changes();
-            readout.textContent = fmt(val, cfg.readout_format);
-          }
-          input.addEventListener("input", () => {
-            draggingSliders.add(cfg.id);
-            const val = cfg.type === "slider" && Number.isInteger(cfg.step) && Number.isInteger(cfg.value)
-              ? parseInt(input.value) : parseFloat(input.value);
-            readout.textContent = fmt(val, cfg.readout_format);
-            const _cu = _cuState.has(cfg.continuous_update_key)
-              ? _cuState.get(cfg.continuous_update_key)
-              : cfg.continuous_update;
-            if (_cu !== false) {
-              if (!_pendingSentBySlider.has(cfg.id)) _pendingSentBySlider.set(cfg.id, []);
-              _pendingSentBySlider.get(cfg.id).push(val);
-              // Send only this slider's value, not the full dict.  Spreading
-              // model.get("_children_values") would include stale sibling-widget
-              // values (e.g. vwidget) whose Python echo hasn't arrived yet.
-              // Python would then apply that stale value, reverting axis.index.
-              model.set("_children_values", { [cfg.id]: val });
-              model.save_changes();
-            }
-          });
-          input.addEventListener("change", () => {
-            draggingSliders.delete(cfg.id);
-            if (cfg.continuous_update === false) {
-              sliderUpdate();
-            } else {
-              // With continuous_update=true the input event already sent the
-              // final value to Python.  Calling sliderUpdate here would spread
-              // stale sibling-widget values (e.g. vwidget) whose Python echo
-              // has not yet arrived, causing Python to revert axis.index.
-              const val = Number.isInteger(cfg.step) && Number.isInteger(cfg.value)
+            function sliderUpdate() {
+              const val = cfg.type === "slider" && Number.isInteger(cfg.step) && Number.isInteger(cfg.value)
                 ? parseInt(input.value) : parseFloat(input.value);
+              const newValues = { ...model.get("_children_values") };
+              newValues[cfg.id] = val;
+              model.set("_children_values", newValues);
+              model.save_changes();
               readout.textContent = fmt(val, cfg.readout_format);
             }
-          });
-        } else {
-          input = document.createElement("input");
-          input.type = "text";
-          input.value = cfg.value;
-          if (cfg.disabled) input.disabled = true;
-        }
-
-        if (cfg.type === "slider") {
-          if (cfg.slider_width) {
-            input.style.flex = `0 0 ${cfg.slider_width}`;
-            input.style.width = cfg.slider_width;
-            input.style.maxWidth = cfg.slider_width;
-          } else {
-            input.style.flex = "1";
-          }
-        } else {
-          input.style.flex = "0 0 160px";
-          input.style.width = "160px";
-          input.style.maxWidth = "160px";
-        }
-        let colorInput = null;
-        if (cfg.is_color) {
-          colorInput = document.createElement("input");
-          colorInput.type = "color";
-          colorInput.value = colorPickerValue(cfg.value);
-          if (cfg.disabled) colorInput.disabled = true;
-          colorInput.style.flex = "0 0 32px";
-          colorInput.style.width = "32px";
-          colorInput.style.height = "32px";
-          colorInput.style.padding = "0";
-          colorInput.style.border = "none";
-          colorInput.style.background = "transparent";
-        }
-        row.appendChild(input);
-        if (colorInput) {
-          row.appendChild(colorInput);
-        }
-        parent.appendChild(row);
-
-        if (cfg.type !== "slider") {
-          input.addEventListener("change", () => {
-            let val;
-            if (cfg.type === "number") val = parseFloat(input.value);
-            else if (cfg.type === "checkbox") val = input.checked;
-            else val = input.value;
-            model.set("_children_values", { [cfg.id]: val });
-            model.save_changes();
-            if (colorInput) {
-              colorInput.value = colorPickerValue(input.value);
-            }
-          });
-          if (colorInput) {
-            colorInput.addEventListener("change", () => {
-              input.value = colorInput.value;
-              model.set("_children_values", { [cfg.id]: colorInput.value });
-              model.save_changes();
+            input.addEventListener("input", () => {
+              draggingSliders.add(cfg.id);
+              const val = cfg.type === "slider" && Number.isInteger(cfg.step) && Number.isInteger(cfg.value)
+                ? parseInt(input.value) : parseFloat(input.value);
+              readout.textContent = fmt(val, cfg.readout_format);
+              const _cu = _cuState.has(cfg.continuous_update_key)
+                ? _cuState.get(cfg.continuous_update_key)
+                : cfg.continuous_update;
+              if (_cu !== false) {
+                if (!_pendingSentBySlider.has(cfg.id)) _pendingSentBySlider.set(cfg.id, []);
+                _pendingSentBySlider.get(cfg.id).push(val);
+                // Send only this slider's value, not the full dict.  Spreading
+                // model.get("_children_values") would include stale sibling-widget
+                // values (e.g. vwidget) whose Python echo hasn't arrived yet.
+                // Python would then apply that stale value, reverting axis.index.
+                model.set("_children_values", { [cfg.id]: val });
+                model.save_changes();
+              }
             });
+            input.addEventListener("change", () => {
+              draggingSliders.delete(cfg.id);
+              if (cfg.continuous_update === false) {
+                sliderUpdate();
+              } else {
+                // With continuous_update=true the input event already sent the
+                // final value to Python.  Calling sliderUpdate here would spread
+                // stale sibling-widget values (e.g. vwidget) whose Python echo
+                // has not yet arrived, causing Python to revert axis.index.
+                const val = Number.isInteger(cfg.step) && Number.isInteger(cfg.value)
+                  ? parseInt(input.value) : parseFloat(input.value);
+                readout.textContent = fmt(val, cfg.readout_format);
+              }
+            });
+          } else {
+            input = document.createElement("input");
+            input.type = "text";
+            input.value = cfg.value;
+            if (cfg.disabled) input.disabled = true;
           }
-        }
 
-        idToEl[cfg.id] = { el: input, colorEl: colorInput, cfg };
+          if (cfg.type === "slider") {
+            if (cfg.slider_width) {
+              input.style.flex = `0 0 ${cfg.slider_width}`;
+              input.style.width = cfg.slider_width;
+              input.style.maxWidth = cfg.slider_width;
+            } else {
+              input.style.flex = "1";
+            }
+          } else {
+            input.style.flex = "0 0 160px";
+            input.style.width = "160px";
+            input.style.maxWidth = "160px";
+          }
+          let colorInput = null;
+          if (cfg.is_color) {
+            colorInput = document.createElement("input");
+            colorInput.type = "color";
+            colorInput.value = colorPickerValue(cfg.value);
+            if (cfg.disabled) colorInput.disabled = true;
+            colorInput.style.flex = "0 0 32px";
+            colorInput.style.width = "32px";
+            colorInput.style.height = "32px";
+            colorInput.style.padding = "0";
+            colorInput.style.border = "none";
+            colorInput.style.background = "transparent";
+          }
+          row.appendChild(input);
+          if (colorInput) {
+            row.appendChild(colorInput);
+          }
+          parent.appendChild(row);
+
+          if (cfg.type !== "slider") {
+            input.addEventListener("change", () => {
+              let val;
+              if (cfg.type === "number") val = parseFloat(input.value);
+              else if (cfg.type === "checkbox") val = input.checked;
+              else val = input.value;
+              model.set("_children_values", { [cfg.id]: val });
+              model.save_changes();
+              if (colorInput) {
+                colorInput.value = colorPickerValue(input.value);
+              }
+            });
+            if (colorInput) {
+              colorInput.addEventListener("change", () => {
+                input.value = colorInput.value;
+                model.set("_children_values", { [cfg.id]: colorInput.value });
+                model.save_changes();
+              });
+            }
+          }
+
+          idToEl[cfg.id] = { el: input, colorEl: colorInput, cfg };
+        }
       }
+      model.on("change:_children_config", () => renderConfigs());
+      renderConfigs();
       return () => {
         window.removeEventListener("mouseup", _onMouseUp);
         window.removeEventListener("touchend", _onMouseUp);
@@ -1740,3 +1796,13 @@ class FlatContainer(AnyWidget):
     def close(self):
         self._closed = True
         super().close()
+
+    @property
+    def children(self):
+        return list(getattr(self, "_source_children", []))
+
+    @children.setter
+    def children(self, value):
+        self._source_children = list(value)
+        _rebuild_flat_configs(self)
+        _wire_flat_sync(self, self._source_children)
