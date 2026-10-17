@@ -6,6 +6,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import anywidget
+import pytest
 import traitlets
 
 from hyperspy_gui_anywidget import utils
@@ -207,6 +208,49 @@ def test_debounce_runs_with_context_captured_at_call_time():
     var.set(2)
     time.sleep(0.3)
     assert calls == [1]
+
+
+def test_debounce_propagates_marimo_context_to_timer_thread(monkeypatch):
+    """Widget state broadcasts from a debounced callback must reach the
+    marimo frontend, which requires marimo's thread-local runtime context to
+    be re-installed on the ``threading.Timer`` thread (contextvars alone do
+    not carry it)."""
+    # The package detects marimo via sys.modules, so the real import done
+    # here must not leak into other tests.
+    marimo_modules_before = {k for k in sys.modules if k.partition(".")[0] == "marimo"}
+    try:
+        pytest.importorskip("marimo")
+        import marimo._runtime.context as context_mod
+        import marimo._runtime.context.types as context_types
+        from marimo._runtime.context import ContextNotInitializedError, get_context
+
+        sentinel = object()
+        monkeypatch.setattr(context_mod, "safe_get_context", lambda: sentinel)
+        monkeypatch.setattr(
+            context_types,
+            "_THREAD_LOCAL_CONTEXT",
+            context_types._ThreadLocalContext(),
+        )
+
+        seen = []
+
+        @utils.debounce(0.05)
+        def fn():
+            try:
+                seen.append(get_context())
+            except ContextNotInitializedError:
+                seen.append("no-context")
+
+        fn()
+        time.sleep(0.4)
+        assert seen == [sentinel]
+    finally:
+        for key in [
+            k
+            for k in sys.modules
+            if k.partition(".")[0] == "marimo" and k not in marimo_modules_before
+        ]:
+            del sys.modules[key]
 
 
 def test_set_title_container_fallback_to_titles_attribute():

@@ -365,6 +365,49 @@ def add_display_arg(f):
     return wrapper
 
 
+def _snapshot_marimo_context():
+    """Capture marimo's runtime context for use on another thread.
+
+    marimo stores its runtime context in a ``threading.local`` rather than in
+    a ``contextvar``, so it is not carried into ``threading.Timer`` threads by
+    ``contextvars.copy_context()``.  Without the context, marimo's
+    ``broadcast_notification`` silently drops anywidget model updates
+    (``ModelLifecycleNotification``), which breaks widget state sync from
+    debounced callbacks: the X-ray lines table rebuild runs in the timer
+    thread and its ``_children_config`` update never reaches the frontend.
+
+    Returns ``(context, thread_local)`` when running inside a marimo kernel
+    with an initialized context, otherwise ``None``.  Import failures of the
+    marimo internals are tolerated (returns ``None``) so this stays a no-op
+    against future marimo refactors and non-marimo environments.
+    """
+    if "marimo" not in sys.modules:
+        return None
+    try:
+        from marimo._runtime.context import safe_get_context
+        from marimo._runtime.context.types import _THREAD_LOCAL_CONTEXT
+    except ImportError:
+        return None
+    context = safe_get_context()
+    if context is None:
+        return None
+    return context, _THREAD_LOCAL_CONTEXT
+
+
+def _restore_marimo_context(snapshot):
+    """Re-install a context captured by ``_snapshot_marimo_context``.
+
+    Only initializes the thread-local when it is unset so a thread that
+    already owns a context (e.g. the main kernel thread) is never
+    overwritten.
+    """
+    if snapshot is None:
+        return
+    context, thread_local = snapshot
+    if thread_local.runtime_context is None:
+        thread_local.runtime_context = context
+
+
 def debounce(wait):
     """Postpone a function's execution until after `wait` seconds.
 
@@ -392,6 +435,10 @@ def debounce(wait):
             nonlocal timer
 
             def call_it():
+                # Restore the marimo thread-local first: the callback
+                # typically broadcasts widget state, which marimo only
+                # delivers when the calling thread has a runtime context.
+                _restore_marimo_context(marimo_context)
                 fn(*args, **kwargs)
 
             if timer is not None:
@@ -402,6 +449,7 @@ def debounce(wait):
             # ipykernel resolves the current cell through contextvars
             # that only exist in the cell execution context.
             context = contextvars.copy_context()
+            marimo_context = _snapshot_marimo_context()
             timer = Timer(wait, context.run, (call_it,))
             timer.start()
 
