@@ -8,6 +8,7 @@ conversion, and the ``add_display_arg`` decorator.
 
 import functools
 import sys
+from threading import Timer
 
 import anywidget
 import IPython.display
@@ -361,6 +362,45 @@ def add_display_arg(f):
             return wdict
 
     return wrapper
+
+
+def debounce(wait):
+    """Postpone a function's execution until after `wait` seconds.
+
+    The decorated function is postponed until after `wait` seconds have
+    elapsed since the last time it was invoked, which avoids running it
+    (and its side effects) repeatedly while a trait changes rapidly.
+
+    Adapted from https://ipywidgets.readthedocs.io/en/latest/examples/Widget%20Events.html#debouncing
+
+    Parameters
+    ----------
+    wait : float
+        The debounce interval in seconds.
+
+    Returns
+    -------
+    callable
+        A decorator that wraps a function with the debouncing behavior.
+    """
+
+    def decorator(fn):
+        timer = None
+
+        def debounced(*args, **kwargs):
+            nonlocal timer
+
+            def call_it():
+                fn(*args, **kwargs)
+
+            if timer is not None:
+                timer.cancel()
+            timer = Timer(wait, call_it)
+            timer.start()
+
+        return debounced
+
+    return decorator
 
 
 def set_title_container(container, titles):

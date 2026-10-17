@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import anywidget
@@ -153,6 +154,43 @@ def test_set_title_container_with_set_title():
     utils.set_title_container(container, ["Tab A", "Tab B"])
     container.set_title.assert_any_call(0, "Tab A")
     container.set_title.assert_any_call(1, "Tab B")
+
+
+def test_debounce_cancels_intermediate_calls():
+    calls = []
+
+    @utils.debounce(0.02)
+    def fn(value):
+        calls.append(value)
+
+    fn(1)
+    time.sleep(0.2)
+    fn(2)
+    fn(3)
+    fn(4)
+    fn(5)
+    time.sleep(0.5)
+    assert calls == [1, 5]
+    calls.clear()
+    fn(10)
+    fn(11)
+    fn(12)
+    time.sleep(0.5)
+    assert calls == [12]
+
+
+def test_debounce_waits_for_last_invocation():
+    calls = []
+
+    @utils.debounce(0.5)
+    def fn(value):
+        calls.append(value)
+
+    fn(1)
+    time.sleep(0.2)
+    assert calls == []
+    time.sleep(0.6)
+    assert calls == [1]
 
 
 def test_set_title_container_fallback_to_titles_attribute():
