@@ -23,7 +23,8 @@ def test_lines_at_energy_interactive():
 
     s = exspy.data.EDS_TEM_FePt_nanoparticles()
     er = EDSRange(s)
-    wd = er.gui(**KWARGS)["anywidget"]["wdict"]
+    aw = er.gui(**KWARGS)["anywidget"]
+    wd = aw["wdict"]
     assert wd["position"].value == 9.92
     assert wd["position"].decimals == 2
     assert wd["width"].value == 0.2
@@ -48,6 +49,21 @@ def test_lines_at_energy_interactive():
     assert len(wd["gb"].children) > 5
     # The table is laid out with one column per field
     assert wd["gb"].layout.grid_template_columns == "70px 70px 100px 100px 100px"
+    # Controls stay on one row with narrow fields so the whole widget does
+    # not grow far beyond the table's grid width.
+    assert wd["position"].input_width == "55px"
+    assert wd["only_lines"].select_width == "55px"
+    # Content-sized labels remove the dead space a right-aligned
+    # min-width 120px label leaves before the next control.
+    assert wd["position"].label_min_width == "0px"
+    assert wd["width"].label_min_width == "0px"
+    # The Jupyter HBox has no default gap; the margins space the controls.
+    assert wd["position"].layout.margin == "0 10px 0 0"
+    assert wd["width"].layout.margin == "0 10px 0 0"
+    # Width parity with the ipywidgets toolkit: those builders cap the
+    # toolbar row and the outer box at 440px.
+    assert aw["widget"].children[0].layout.max_width == "440px"
+    assert aw["widget"].layout.max_width == "440px"
     header_values = [w.value for w in wd["gb"].children[:5]]
     for expected in ("Element", "Line", "Energy (keV)", "Weight", "Intensity"):
         assert any(expected in h for h in header_values)

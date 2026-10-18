@@ -476,9 +476,26 @@ def print_lines_table_aw(obj, **kwargs):
         ``display=False``, otherwise ``None`` (widget displayed inline).
     """
     wdict = {}
-    position = BoundedFloatTextWidget(min=0, description="Position (keV)", step=0.01, decimals=2)
-    width = BoundedFloatTextWidget(min=0, description="Width (keV)", step=0.1)
-    only_lines = enum2dropdown(obj.traits()["only_lines"], description="Only lines")
+    # The three labeled controls stay on one row; narrow fields keep the
+    # toolbar width close to the table grid below it.
+    position = BoundedFloatTextWidget(
+        min=0,
+        description="Position (keV)",
+        step=0.01,
+        decimals=2,
+        input_width="55px",
+        label_min_width="0px",
+    )
+    width = BoundedFloatTextWidget(
+        min=0, description="Width (keV)", step=0.1, input_width="55px", label_min_width="0px"
+    )
+    only_lines = enum2dropdown(
+        obj.traits()["only_lines"], description="Only lines", select_width="55px"
+    )
+    # The Jupyter HBox applies no gap between children, so the controls
+    # are spaced per instance; the Marimo flat renderer adds its own gap.
+    position.layout.margin = "0 10px 0 0"
+    width.layout.margin = "0 10px 0 0"
     update = ButtonWidget(description="Refresh table")
     gb = ContainerWidget(
         children=[],
@@ -568,6 +585,7 @@ def print_lines_table_aw(obj, **kwargs):
     energy_box = ContainerWidget(
         children=[position, width, only_lines],
         layout="horizontal",
+        max_width="440px",
     )
     box = ContainerWidget(
         children=[
@@ -577,6 +595,7 @@ def print_lines_table_aw(obj, **kwargs):
             ContainerWidget(children=[update, close], layout="horizontal"),
         ],
         layout="vertical",
+        max_width="440px",
     )
 
     return {

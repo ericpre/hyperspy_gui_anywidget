@@ -43,10 +43,22 @@ def test_number_and_dropdown_width_reach_flat_config():
     number = BoundedFloatTextWidget(input_width="90px")
     assert _widget_config(number)["input_width"] == "90px"
     assert BoundedFloatTextWidget().input_width == "160px"
+    assert BoundedFloatTextWidget().label_min_width == "120px"
 
     dropdown = _Dropdown(options=["a", "b"], select_width="120px")
     assert _widget_config(dropdown)["select_width"] == "120px"
     assert _Dropdown(options=["a", "b"]).select_width == "160px"
+
+
+def test_container_max_width_caps_both_toolkit_paths():
+    vbox = ContainerWidget(children=[], layout="vertical", max_width="440px")
+    assert vbox.layout.max_width == "440px"
+
+    hbox = ContainerWidget(children=[], layout="horizontal", max_width="300px")
+    assert hbox.layout.max_width == "300px"
+
+    flat = _make_flat_container([], "vertical", max_width="440px")
+    assert flat._max_width == "440px"
 
 
 @pytest.mark.parametrize("is_color", [True, False])

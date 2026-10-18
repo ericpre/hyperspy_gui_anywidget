@@ -519,6 +519,7 @@ class BoundedFloatTextWidget(AnyWidget):
       const disabled = model.get("disabled");
       const visible = model.get("visible");
       const inputWidth = model.get("input_width");
+      const labelMinWidth = model.get("label_min_width");
 
       function formatValue(v) {
         if (v === null || v === undefined || isNaN(v)) return v;
@@ -530,7 +531,7 @@ class BoundedFloatTextWidget(AnyWidget):
 
       el.innerHTML = `
         <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
+          <label style="min-width: ${labelMinWidth}; text-align: right; margin-right: 5px;">${description}</label>
           <input type="number" min="${min}" max="${max}" step="${step}" value="${formatValue(value)}" ${disabled ? "disabled" : ""} style="flex: 0 0 ${inputWidth}; width: ${inputWidth}; max-width: ${inputWidth};">
         </div>
       `;
@@ -603,6 +604,9 @@ class BoundedFloatTextWidget(AnyWidget):
     # Field width rather than fixed CSS so compact toolbars can shrink
     # single rows without changing every widget in the package.
     input_width = traitlets.Unicode("160px").tag(sync=True)
+    # Right-aligned labels reserve min-width 120px, which leaves dead
+    # space before a shorter label in one-row toolbars.
+    label_min_width = traitlets.Unicode("120px").tag(sync=True)
 
     @traitlets.validate("value")
     def _validate_value(self, proposal):
@@ -803,33 +807,40 @@ class OddIntSliderWidget(IntSliderWidget):
 class ContainerWidget:
     def __new__(cls, children=None, layout="vertical", **kwargs):
         children = children or []
+        max_width = kwargs.pop("max_width", None)
         if "marimo" in sys.modules:
             return _make_flat_container(children, layout, **kwargs)
         if layout == "horizontal":
-            return HBox(children=children, **kwargs)
+            widget = HBox(children=children, **kwargs)
         elif layout == "grid":
             grid_columns = kwargs.pop("grid_template_columns", None)
             gb = GridBox(children=children, **kwargs)
             if grid_columns:
                 gb.layout.grid_template_columns = grid_columns
                 gb.layout.grid_template_rows = "auto"
-            return gb
+            widget = gb
         elif layout == "tabs":
             titles = kwargs.pop("titles", None)
             tab = Tab(children=children, **kwargs)
             if titles:
                 for i, title in enumerate(titles):
                     tab.set_title(i, str(title))
-            return tab
+            widget = tab
         elif layout == "accordion":
             titles = kwargs.pop("titles", None)
             acc = Accordion(children=children, **kwargs)
             if titles:
                 for i, title in enumerate(titles):
                     acc.set_title(i, str(title))
-            return acc
+            widget = acc
         else:
-            return VBox(children=children, **kwargs)
+            widget = VBox(children=children, **kwargs)
+        if max_width:
+            # Caps the container width like the sibling ipywidgets toolkit
+            # builders do with Layout(width=...), so both toolkits render
+            # these widgets at the same overall width.
+            widget.layout.max_width = max_width
+        return widget
 
 
 def _widget_config(w):
@@ -848,6 +859,7 @@ def _widget_config(w):
         cfg["decimals"] = getattr(w, "decimals", None)
         cfg["continuous_update"] = getattr(w, "continuous_update", True)
         cfg["input_width"] = getattr(w, "input_width", "160px")
+        cfg["label_min_width"] = getattr(w, "label_min_width", "120px")
     elif isinstance(w, TextWidget):
         cfg["type"] = "text"
         cfg["value"] = w.value
@@ -955,6 +967,7 @@ def _flatten_widget_tree(children):
                 {
                     "type": "layout_start",
                     "direction": "column" if isinstance(child, VBox) else "row",
+                    "max_width": getattr(child.layout, "max_width", None),
                 }
             )
             configs.extend(_flatten_widget_tree(child.children))
@@ -967,6 +980,7 @@ def _flatten_widget_tree(children):
                     "type": "layout_start",
                     "direction": "grid",
                     "grid_template_columns": child.layout.grid_template_columns,
+                    "max_width": getattr(child.layout, "max_width", None),
                 }
             )
             configs.extend(_flatten_widget_tree(child.children))
@@ -983,7 +997,13 @@ def _flatten_widget_tree(children):
             configs.extend(_flatten_widget_tree(child.children))
             configs.append({"type": "accordion_end"})
         elif isinstance(child, FlatContainer):
-            configs.append({"type": "layout_start", "direction": child._layout})
+            configs.append(
+                {
+                    "type": "layout_start",
+                    "direction": child._layout,
+                    "max_width": getattr(child, "_max_width", None) or None,
+                }
+            )
             configs.extend(child._children_config)
             configs.append({"type": "layout_end"})
         else:
@@ -1028,7 +1048,11 @@ def _build_flat_configs(children, layout, **kwargs):
 
 def _make_flat_container(children, layout, **kwargs):
     configs, final_layout = _build_flat_configs(children, layout, **kwargs)
-    container = FlatContainer(_children_config=configs, _layout=final_layout)
+    container = FlatContainer(
+        _children_config=configs,
+        _layout=final_layout,
+        _max_width=str(kwargs.get("max_width") or ""),
+    )
     # Keep the build arguments so dynamically updating the children can
     # rebuild the config stream the same way.
     container._source_children = list(children)
@@ -1293,6 +1317,9 @@ class FlatContainer(AnyWidget):
         const configs = model.get("_children_config");
         const layout = model.get("_layout") || "vertical";
         el.style.flexDirection = layout === "horizontal" ? "row" : "column";
+        if (model.get("_max_width")) {
+          el.style.maxWidth = model.get("_max_width");
+        }
         el.replaceChildren();
         for (const key of Object.keys(idToEl)) delete idToEl[key];
         draggingSliders.clear();
@@ -1425,6 +1452,9 @@ class FlatContainer(AnyWidget):
               container.style.flexDirection = cfg.direction;
               container.style.gap = "10px";
               container.style.flexWrap = "wrap";
+            }
+            if (cfg.max_width) {
+              container.style.maxWidth = cfg.max_width;
             }
             const current = stack[stack.length - 1];
             current.parent.appendChild(container);
@@ -1641,7 +1671,7 @@ class FlatContainer(AnyWidget):
           if (cfg.label !== undefined && cfg.label !== "") {
             const label = document.createElement("label");
             label.textContent = cfg.label;
-            label.style.minWidth = "120px";
+            label.style.minWidth = cfg.label_min_width || "120px";
             label.style.textAlign = "right";
             label.style.marginRight = "5px";
             row.appendChild(label);
@@ -1800,6 +1830,9 @@ class FlatContainer(AnyWidget):
     _children_values = traitlets.Dict(default_value={}).tag(sync=True)
     _layout = traitlets.Unicode("vertical").tag(sync=True)
     _closed = traitlets.Bool(False).tag(sync=True)
+    # Width cap mirrored from ContainerWidget(max_width=...) for parity
+    # with the sibling ipywidgets toolkit builders.
+    _max_width = traitlets.Unicode("").tag(sync=True)
 
     def close(self):
         self._closed = True
