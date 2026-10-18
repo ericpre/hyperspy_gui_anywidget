@@ -9,7 +9,7 @@ conversion, and the ``add_display_arg`` decorator.
 import contextvars
 import functools
 import sys
-from threading import Timer
+from threading import Timer, local
 
 import anywidget
 import IPython.display
@@ -408,6 +408,77 @@ def _restore_marimo_context(snapshot):
         thread_local.runtime_context = context
 
 
+_MARIMO_DEBOUNCE_OWNER_CELL = local()
+_marimo_lifecycle_patch_installed = False
+
+
+def _current_marimo_cell_id():
+    """Return the id of the marimo cell running on this thread, if any."""
+    if "marimo" not in sys.modules:
+        return None
+    try:
+        from marimo._runtime.context import safe_get_context
+    except ImportError:
+        return None
+    context = safe_get_context()
+    if context is None:
+        return None
+    return getattr(context, "cell_id", None)
+
+
+def _install_marimo_off_cell_widget_fix():
+    """Let marimo resolve widget lifecycle items created off the cell thread.
+
+    marimo (at least up to 0.25.1) makes ``CellLifecycleRegistry.add`` a
+    silent no-op when a runtime context exists but no cell is running
+    (``ctx.cell_id is None``): the item is neither created nor registered,
+    yet callers such as ``marimo._output.data`` dereference
+    ``item.virtual_file`` immediately afterwards. Constructing any
+    anywidget under marimo stores its inline ESM as exactly such a virtual
+    file (``EsmSpec.from_esm``), so building widgets from a debounced
+    callback — which runs in a ``threading.Timer`` with a restored context
+    but no running cell — leaves the item uncreated and the next
+    dereference raises ``AssertionError`` (``assert self._virtual_file is
+    not None``). The X-ray lines table hits this on every rebuild because
+    each new row constructs widgets.
+
+    The patch preserves upstream behaviour for running cells. Off-cell it
+    creates the item against the real context (so virtual files register
+    and serve normally) and injects it into the marimo cell that owns the
+    debounced GUI — recorded in ``_MARIMO_DEBOUNCE_OWNER_CELL`` by
+    ``debounce`` — so a re-run of that cell still disposes the items.
+    Remove this once marimo handles the no-running-cell case itself.
+    """
+    # Importing marimo here would flip every "marimo" in sys.modules check
+    # in the package and degrade Jupyter sessions to the flat path, so only
+    # act when marimo is already active.
+    if "marimo" not in sys.modules:
+        return
+    global _marimo_lifecycle_patch_installed
+    if _marimo_lifecycle_patch_installed:
+        return
+    try:
+        from marimo._runtime.cell_lifecycle_registry import CellLifecycleRegistry
+    except ImportError:
+        return
+    _marimo_lifecycle_patch_installed = True
+
+    def add(self, item):
+        from marimo._runtime.context import get_context
+
+        ctx = get_context()
+        if ctx.cell_id is None:
+            owner = getattr(_MARIMO_DEBOUNCE_OWNER_CELL, "cell_id", None)
+            item.create(ctx)
+            if owner is not None:
+                return self.inject(owner, item)
+            return
+        item.create(ctx)
+        return self.inject(ctx.cell_id, item)
+
+    CellLifecycleRegistry.add = add
+
+
 def debounce(wait):
     """Postpone a function's execution until after `wait` seconds.
 
@@ -430,19 +501,35 @@ def debounce(wait):
 
     def decorator(fn):
         timer = None
+        owner_cell_id = None
 
         def debounced(*args, **kwargs):
-            nonlocal timer
+            nonlocal timer, owner_cell_id
 
             def call_it():
                 # Restore the marimo thread-local first: the callback
                 # typically broadcasts widget state, which marimo only
                 # delivers when the calling thread has a runtime context.
                 _restore_marimo_context(marimo_context)
-                fn(*args, **kwargs)
+                # Publishing the owning cell lets the patched
+                # CellLifecycleRegistry.add attach items built here to
+                # that cell, so they are still disposed on its re-run.
+                _MARIMO_DEBOUNCE_OWNER_CELL.cell_id = owner_cell_id
+                try:
+                    fn(*args, **kwargs)
+                finally:
+                    _MARIMO_DEBOUNCE_OWNER_CELL.cell_id = None
 
             if timer is not None:
                 timer.cancel()
+            # Capture the cell that owns this debounced GUI while it is
+            # still running; widgets constructed later in the timer thread
+            # inherit it as their disposal owner (marimo cannot see one
+            # there because no cell is executing).
+            cell_id = _current_marimo_cell_id()
+            if cell_id is not None:
+                owner_cell_id = cell_id
+            _install_marimo_off_cell_widget_fix()
             # Capture the contextvars context at call time and run the
             # callback inside it.  Without this, callbacks scheduled from
             # a Jupyter kernel crash when they create ipywidget comms:

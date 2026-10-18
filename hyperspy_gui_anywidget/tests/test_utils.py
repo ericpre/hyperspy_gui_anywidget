@@ -3,6 +3,7 @@
 import contextvars
 import sys
 import time
+import types
 from unittest.mock import MagicMock, patch
 
 import anywidget
@@ -208,6 +209,65 @@ def test_debounce_runs_with_context_captured_at_call_time():
     var.set(2)
     time.sleep(0.3)
     assert calls == [1]
+
+
+def test_marimo_off_cell_lifecycle_fix_resolves_items_without_running_cell():
+    """marimo's CellLifecycleRegistry.add silently strands lifecycle items
+    when a context exists but no cell is running (e.g. widget construction
+    from a debounce Timer thread), which later raises
+    ``assert self._virtual_file is not None`` in marimo's virtual_file.py.
+    The package patch must create such items eagerly and inject them into
+    the debounce owner cell so they are still disposed."""
+    pytest.importorskip("marimo")
+    from marimo._runtime.cell_lifecycle_registry import CellLifecycleRegistry
+
+    class FakeItem:
+        def __init__(self):
+            self.created_with = []
+
+        def create(self, context):
+            self.created_with.append(context)
+
+        def dispose(self, context, deletion):
+            return True
+
+    off_cell_ctx = types.SimpleNamespace(cell_id=None)
+    running_ctx = types.SimpleNamespace(cell_id="cell-running")
+    registry = CellLifecycleRegistry()
+
+    utils._install_marimo_off_cell_widget_fix()
+
+    no_owner = FakeItem()
+    with patch("marimo._runtime.context.get_context", return_value=off_cell_ctx):
+        registry.add(no_owner)
+    # Created (so it is never dereferenced uncreated) but attached to no
+    # cell because no debounce owner is published on this thread.
+    assert no_owner.created_with == [off_cell_ctx]
+    assert registry.registry == {}
+
+    owned = FakeItem()
+    utils._MARIMO_DEBOUNCE_OWNER_CELL.cell_id = "cell-owner"
+    try:
+        with patch("marimo._runtime.context.get_context", return_value=off_cell_ctx):
+            registry.add(owned)
+    finally:
+        utils._MARIMO_DEBOUNCE_OWNER_CELL.cell_id = None
+    # Injected into the owning cell so a re-run of that cell disposes it.
+    assert owned.created_with == [off_cell_ctx]
+    assert registry.registry["cell-owner"] == {owned}
+
+    on_cell = FakeItem()
+    with patch("marimo._runtime.context.get_context", return_value=running_ctx):
+        registry.add(on_cell)
+    assert on_cell.created_with == [running_ctx]
+    assert registry.registry["cell-running"] == {on_cell}
+
+    # Installing twice must not wrap the patch twice (one create per add).
+    utils._install_marimo_off_cell_widget_fix()
+    again = FakeItem()
+    with patch("marimo._runtime.context.get_context", return_value=running_ctx):
+        registry.add(again)
+    assert again.created_with == [running_ctx]
 
 
 def test_debounce_propagates_marimo_context_to_timer_thread(monkeypatch):
