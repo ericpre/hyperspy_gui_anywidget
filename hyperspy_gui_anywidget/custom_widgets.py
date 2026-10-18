@@ -1091,7 +1091,13 @@ def _flatten_widget_tree(children):
                 configs.append({"type": "tab_end"})
         elif isinstance(child, Accordion):
             titles = [child.get_title(i) for i in range(len(child.children))]
-            configs.append({"type": "accordion_start", "titles": titles})
+            configs.append(
+                {
+                    "type": "accordion_start",
+                    "titles": titles,
+                    "selected_index": child.selected_index,
+                }
+            )
             configs.extend(_flatten_widget_tree(child.children))
             configs.append({"type": "accordion_end"})
         elif isinstance(child, FlatContainer):
@@ -1113,8 +1119,17 @@ def _build_flat_configs(children, layout, **kwargs):
     """Build the FlatContainer config stream for a layout and children."""
     if layout == "accordion":
         titles = kwargs.get("titles", [])
+        # ipywidgets 8 Accordion leaves selected_index None (all sections
+        # closed) unless a caller sets it; the flat renderer must mirror
+        # that so accordions do not open themselves in Marimo.
         configs = (
-            [{"type": "accordion_start", "titles": list(titles)}]
+            [
+                {
+                    "type": "accordion_start",
+                    "titles": list(titles),
+                    "selected_index": kwargs.get("selected_index", None),
+                }
+            ]
             + _flatten_widget_tree(children)
             + [{"type": "accordion_end"}]
         )
@@ -1488,13 +1503,23 @@ class FlatContainer(AnyWidget):
             const parent = stack[stack.length - 1].parent;
             parent.appendChild(accordionEl);
 
-            stack.push({ parent: accordionEl, layout: "vertical", _accordion: { titles, sections: [] } });
+            stack.push({
+              parent: accordionEl,
+              layout: "vertical",
+              _accordion: {
+                titles,
+                // Mirrors ipywidgets 8: null keeps every section closed.
+                selected_index:
+                  cfg.selected_index === undefined ? null : cfg.selected_index,
+                sections: [],
+              },
+            });
             continue;
           }
           if (cfg.type === "accordion_end") {
             const entry = stack.pop();
             if (!entry._accordion) continue;
-            const { titles } = entry._accordion;
+            const { titles, selected_index: openIndex } = entry._accordion;
             const accordionEl = entry.parent;
 
             const childNodes = Array.from(accordionEl.children);
@@ -1502,7 +1527,12 @@ class FlatContainer(AnyWidget):
 
             childNodes.forEach((childEl, i) => {
               const header = document.createElement("button");
-              header.textContent = (titles[i] !== undefined ? String(titles[i]) : "Section " + (i + 1));
+              // ipywidgets accordion headers carry a disclosure caret so a
+              // closed section still reads as expandable; keep the caret in
+              // its own span so the title text stays intact for clicks.
+              header.style.display = "flex";
+              header.style.alignItems = "center";
+              header.style.gap = "6px";
               header.style.width = "100%";
               header.style.textAlign = "left";
               header.style.padding = "8px 12px";
@@ -1512,6 +1542,12 @@ class FlatContainer(AnyWidget):
               header.style.fontSize = "13px";
               header.style.fontWeight = "500";
 
+              const caret = document.createElement("span");
+              const titleEl = document.createElement("span");
+              titleEl.textContent = (titles[i] !== undefined ? String(titles[i]) : "Section " + (i + 1));
+              header.appendChild(caret);
+              header.appendChild(titleEl);
+
               const content = document.createElement("div");
               content.style.display = "none";
               content.style.padding = "8px";
@@ -1520,19 +1556,20 @@ class FlatContainer(AnyWidget):
               content.style.background = "#fff";
               content.appendChild(childEl);
 
+              const setOpen = (open) => {
+                content.style.display = open ? "block" : "none";
+                header.style.background = open ? "#e8e8e8" : "#f5f5f5";
+                caret.textContent = open ? "▾" : "▸";
+              };
+
               header.addEventListener("click", () => {
-                const isOpen = content.style.display !== "none";
-                content.style.display = isOpen ? "none" : "block";
-                header.style.background = isOpen ? "#f5f5f5" : "#e8e8e8";
+                setOpen(content.style.display === "none");
               });
 
               accordionEl.appendChild(header);
               accordionEl.appendChild(content);
 
-              if (i === 0) {
-                content.style.display = "block";
-                header.style.background = "#e8e8e8";
-              }
+              setOpen(i === openIndex);
             });
             continue;
           }

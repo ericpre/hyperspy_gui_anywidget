@@ -14,6 +14,7 @@ from hyperspy_gui_anywidget.custom_widgets import (
     TextWidget,
     ToggleButtonWidget,
     _apply_value,
+    _build_flat_configs,
     _extract_value,
     _flatten_widget_tree,
     _make_flat_container,
@@ -119,6 +120,57 @@ def test_flatten_widget_tree_preserves_tabs_and_accordions():
     assert types.count("tab_end") == 2
     assert "accordion_start" in types
     assert "accordion_end" in types
+
+
+def test_flatten_widget_tree_carries_accordion_selected_index():
+    first = FloatTextWidget(description="A")
+    accordion = Accordion(children=[VBox(children=[first])])
+    accordion.set_title(0, "Help")
+
+    configs = _flatten_widget_tree([accordion])
+    start = next(cfg for cfg in configs if cfg["type"] == "accordion_start")
+
+    # ipywidgets 8 defaults selected_index to None, which renders every
+    # section closed; the flat config must carry that state unchanged.
+    assert start["selected_index"] is None
+
+    accordion.selected_index = 0
+    configs = _flatten_widget_tree([accordion])
+    start = next(cfg for cfg in configs if cfg["type"] == "accordion_start")
+    assert start["selected_index"] == 0
+
+
+def test_build_flat_configs_accordion_selected_index_default_closed():
+    child = FloatTextWidget(description="Left", value=1.0)
+
+    configs, layout = _build_flat_configs([child], "accordion", titles=["Help"])
+
+    assert layout == "vertical"
+    assert configs[0]["type"] == "accordion_start"
+    assert configs[0]["titles"] == ["Help"]
+    assert configs[0]["selected_index"] is None
+
+    configs, _ = _build_flat_configs([child], "accordion", titles=["Help"], selected_index=0)
+    assert configs[0]["selected_index"] == 0
+
+
+def test_container_widget_marimo_accordion_selected_index():
+    with patch.dict(sys.modules, {"marimo": object()}):
+        closed = ContainerWidget(
+            children=[FloatTextWidget(description="Left", value=1.0)],
+            layout="accordion",
+            titles=["Help"],
+        )
+        opened = ContainerWidget(
+            children=[FloatTextWidget(description="Right", value=2.0)],
+            layout="accordion",
+            titles=["Help"],
+            selected_index=0,
+        )
+
+    assert isinstance(closed, FlatContainer)
+    assert closed._children_config[0]["selected_index"] is None
+    assert opened._children_config[0]["selected_index"] == 0
 
 
 def test_container_widget_grid_layout_builds_gridbox():
