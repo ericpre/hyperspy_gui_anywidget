@@ -10,6 +10,81 @@ import traitlets
 from anywidget.widget import AnyWidget
 from ipywidgets import Accordion, GridBox, HBox, Tab, VBox
 
+# Number/text inputs and selects are styled from the ipywidgets
+# labextension CSS (widget-base.css) so bare browser controls render
+# exactly like the sibling ipywidgets toolkit's controls; the css
+# variables resolve inside JupyterLab, while the literal fallbacks keep
+# the controls legible in other frontends such as Marimo.
+# The url() token must carry no double quote at all: these style strings
+# are embedded in HTML style="..." attributes via innerHTML templates, so
+# a raw " would terminate the attribute mid-declaration. Quoting is thus
+# single-quote, with the SVG's own quotes and separators percent-encoded.
+_ARROW_FALLBACK = (
+    "url('data:image/svg+xml,"
+    "%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27"
+    "%20viewBox%3D%270%200%2018%2018%27%3E"
+    "%3Cpath%20d%3D%27M5.2%205.9%209%209.7l3.8-3.8%201.2%201.2-4.9%205-4.9-5z%27"
+    "%20fill%3D%27%23a5a5a5%27%2F%3E%3C%2Fsvg%3E')"
+)
+_INPUT_STYLE_CSS = (
+    " height: var(--jp-widgets-inline-height, 28px);"
+    " box-sizing: border-box;"
+    " font-size: var(--jp-widgets-font-size, 13px);"
+    " color: var(--jp-widgets-input-color, inherit);"
+    " background-color: var(--jp-widgets-input-background-color, transparent);"
+    # border must be longhands: a var()-containing border shorthand loses
+    # the color slot to the UA default (Chromium misresolution).
+    " border-style: solid;"
+    " border-width: var(--jp-border-width, 1px);"
+    " border-color: var(--jp-widgets-input-border-color, #c2c2c2);"
+    " border-radius: 0;"
+    " padding: var(--jp-widgets-input-padding, 4px) 0"
+    " var(--jp-widgets-input-padding, 4px)"
+    " calc(var(--jp-widgets-input-padding, 4px) * 2);"
+)
+_SELECT_STYLE_CSS = (
+    " height: var(--jp-widgets-inline-height, 28px);"
+    " box-sizing: border-box;"
+    " font-size: var(--jp-widgets-font-size, 13px);"
+    " color: var(--jp-widgets-input-color, inherit);"
+    " background-color: var(--jp-widgets-input-background-color, transparent);"
+    " border-style: solid;"
+    " border-width: var(--jp-border-width, 1px);"
+    " border-color: var(--jp-widgets-input-border-color, #c2c2c2);"
+    " border-radius: 0;"
+    " appearance: none; -webkit-appearance: none; -moz-appearance: none;"
+    " background-repeat: no-repeat; background-size: 20px;"
+    " background-position: right center;"
+    " background-image: var(--jp-widgets-dropdown-arrow,"
+    " " + _ARROW_FALLBACK + ");"
+    " padding: 0 20px 0 calc(var(--jp-widgets-input-padding, 4px) * 2);"
+)
+
+
+def _focus_toggle_js(var):
+    """Focus/blur border-color toggle matching the ipywidgets focus style.
+
+    Blur must RESTORE the base border-color rather than clear it: in
+    Chromium the CSSOM write and the style attribute are the same
+    declaration set, so ``borderColor = ''`` would also strip the
+    attribute-declared color and the UA default would bleed through
+    after the first blur.
+    """
+    return (
+        f'{var}.addEventListener("focus", () => {{'
+        f" {var}.style.borderColor ="
+        ' "var(--jp-widgets-input-focus-border-color, #61a9e1)";'
+        " });"
+        f'{var}.addEventListener("blur", () => {{'
+        f" {var}.style.borderColor ="
+        ' "var(--jp-widgets-input-border-color, #c2c2c2)";'
+        " });"
+    )
+
+
+_INPUT_FOCUS_JS = _focus_toggle_js("input")
+_SELECT_FOCUS_JS = _focus_toggle_js("select")
+
 
 class FloatTextWidget(AnyWidget):
     """A float input widget with a label."""
@@ -22,14 +97,15 @@ class FloatTextWidget(AnyWidget):
       const visible = model.get("visible");
 
       el.innerHTML = `
-        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
-          <input type="number" step="any" value="${value}" ${disabled ? "disabled" : ""} style="flex: 0 0 160px; width: 160px; max-width: 160px;">
+        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 4px; margin-bottom: 5px;">
+          <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
+          <input type="number" step="any" value="${value}" ${disabled ? "disabled" : ""} style="__INPUT_STYLE__ flex: 0 0 160px; width: 160px; max-width: 160px;">
         </div>
       `;
       const row = el.querySelector("div");
       const input = el.querySelector("input");
       const label = el.querySelector("label");
+__INPUT_FOCUS_JS__
 
       input.addEventListener("change", () => {
         model.set("value", parseFloat(input.value));
@@ -53,7 +129,7 @@ class FloatTextWidget(AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     value = traitlets.Float(0.0).tag(sync=True)
     description = traitlets.Unicode("").tag(sync=True)
     disabled = traitlets.Bool(False).tag(sync=True)
@@ -90,19 +166,19 @@ class TextWidget(AnyWidget):
 
       if (showColor) {
         el.innerHTML = `
-          <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-            <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
+          <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 4px; margin-bottom: 5px;">
+            <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <input class="text-input" type="text" value="${value}" ${disabled ? "disabled" : ""} style="flex: 0 0 160px; width: 160px; max-width: 160px;">
+              <input class="text-input" type="text" value="${value}" ${disabled ? "disabled" : ""} style="__INPUT_STYLE__ flex: 0 0 160px; width: 160px; max-width: 160px;">
               <input class="picker-input" type="color" value="${colorPickerValue(value)}" ${disabled ? "disabled" : ""} style="flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: none; background: transparent;">
             </div>
           </div>
         `;
       } else {
         el.innerHTML = `
-          <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-            <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
-            <input class="text-input" type="text" value="${value}" ${disabled ? "disabled" : ""} style="flex: 0 0 160px; width: 160px; max-width: 160px;">
+          <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 4px; margin-bottom: 5px;">
+            <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
+            <input class="text-input" type="text" value="${value}" ${disabled ? "disabled" : ""} style="__INPUT_STYLE__ flex: 0 0 160px; width: 160px; max-width: 160px;">
           </div>
         `;
       }
@@ -110,6 +186,7 @@ class TextWidget(AnyWidget):
       const input = el.querySelector(".text-input");
       const colorInput = el.querySelector(".picker-input");
       const label = el.querySelector("label");
+__INPUT_FOCUS_JS__
 
       input.addEventListener("change", () => {
         model.set("value", input.value);
@@ -151,7 +228,7 @@ class TextWidget(AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     value = traitlets.Unicode("").tag(sync=True)
     description = traitlets.Unicode("").tag(sync=True)
     disabled = traitlets.Bool(False).tag(sync=True)
@@ -170,14 +247,15 @@ class IntTextWidget(AnyWidget):
       const visible = model.get("visible");
 
       el.innerHTML = `
-        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
-          <input type="number" value="${value}" ${disabled ? "disabled" : ""} style="flex: 0 0 160px; width: 160px; max-width: 160px;">
+        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 4px; margin-bottom: 5px;">
+          <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
+          <input type="number" value="${value}" ${disabled ? "disabled" : ""} style="__INPUT_STYLE__ flex: 0 0 160px; width: 160px; max-width: 160px;">
         </div>
       `;
       const row = el.querySelector("div");
       const input = el.querySelector("input");
       const label = el.querySelector("label");
+__INPUT_FOCUS_JS__
 
       input.addEventListener("change", () => {
         model.set("value", parseInt(input.value));
@@ -201,7 +279,7 @@ class IntTextWidget(AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     value = traitlets.Int(0).tag(sync=True)
     description = traitlets.Unicode("").tag(sync=True)
     disabled = traitlets.Bool(False).tag(sync=True)
@@ -225,8 +303,8 @@ class IntSliderWidget(AnyWidget):
         : "flex: 1;";
 
       el.innerHTML = `
-        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
+        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 4px; margin-bottom: 5px;">
+          <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
           <input type="range" min="${min}" max="${max}" step="${step}" value="${value}" style="${sliderStyle}">
           <span class="readout" style="min-width: 40px; text-align: right;">${value}</span>
         </div>
@@ -360,8 +438,8 @@ class FloatSliderWidget(AnyWidget):
       }
 
       el.innerHTML = `
-        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
+        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 4px; margin-bottom: 5px;">
+          <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
           <input type="range" min="${min}" max="${max}" step="${step}" value="${value}" style="${sliderStyle}">
           <span class="readout" style="min-width: 60px; text-align: right;">${formatFloat(value, model.get("readout_format"))}</span>
         </div>
@@ -530,14 +608,15 @@ class BoundedFloatTextWidget(AnyWidget):
       }
 
       el.innerHTML = `
-        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: ${labelMinWidth}; text-align: right; margin-right: 5px;">${description}</label>
-          <input type="number" min="${min}" max="${max}" step="${step}" value="${formatValue(value)}" ${disabled ? "disabled" : ""} style="flex: 0 0 ${inputWidth}; width: ${inputWidth}; max-width: ${inputWidth};">
+        <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 4px; margin-bottom: 5px;">
+          <label style="min-width: ${labelMinWidth}; text-align: right; margin-right: 0px;">${description}</label>
+          <input type="number" min="${min}" max="${max}" step="${step}" value="${formatValue(value)}" ${disabled ? "disabled" : ""} style="__INPUT_STYLE__ flex: 0 0 ${inputWidth}; width: ${inputWidth}; max-width: ${inputWidth};">
         </div>
       `;
       const row = el.querySelector("div");
       const input = el.querySelector("input");
       const label = el.querySelector("label");
+__INPUT_FOCUS_JS__
 
       function commitValue() {
         let val = parseFloat(input.value);
@@ -587,7 +666,7 @@ class BoundedFloatTextWidget(AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     value = traitlets.Float(0.0).tag(sync=True)
     min = traitlets.Float(0.0).tag(sync=True)
     max = traitlets.Float(100.0).tag(sync=True)
@@ -637,7 +716,10 @@ class ButtonWidget(AnyWidget):
     function render({ model, el }) {
       const description = model.get("description");
       const tooltip = model.get("tooltip");
-      el.innerHTML = `<button title="${tooltip}">${description}</button>`;
+      el.style.margin = "var(--jp-widgets-margin, 2px)";
+      // Button recipe copied from the ipywidgets labextension CSS
+      // (.jupyter-button) so both toolkits render identical buttons.
+      el.innerHTML = `<button title="${tooltip}" style="height: var(--jp-widgets-inline-height, 28px); line-height: var(--jp-widgets-inline-height, 28px); padding: 0 10px; border: none; border-radius: 4px; background: var(--jp-layout-color2, none); color: var(--jp-ui-font-color1, inherit); cursor: pointer;">${description}</button>`;
       const button = el.querySelector("button");
       button.addEventListener("click", () => {
         model.set("clicks", model.get("clicks") + 1);
@@ -657,6 +739,7 @@ class HTMLWidget(AnyWidget):
     _esm = """
     function render({ model, el }) {
       const value = model.get("value");
+      el.style.margin = "var(--jp-widgets-margin, 2px)";
       el.innerHTML = `<div>${value}</div>`;
       model.on("change:value", () => {
         el.querySelector("div").innerHTML = model.get("value");
@@ -676,8 +759,8 @@ class IntProgressWidget(AnyWidget):
       const max = model.get("max");
       const description = model.get("description");
       el.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 5px;">
+          <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
           <progress value="${value}" max="${max}" style="flex: 1;"></progress>
           <span class="readout" style="min-width: 40px; text-align: right;">${value}/${max}</span>
         </div>
@@ -707,22 +790,36 @@ class ToggleButtonWidget(AnyWidget):
     function render({ model, el }) {
       const value = model.get("value");
       const description = model.get("description");
-      el.innerHTML = `<button style="background: ${value ? '#2196F3' : '#e0e0e0'}; color: ${value ? 'white' : 'black'};">${description}</button>`;
+      const buttonWidth = model.get("button_width");
+      const widthStyle = buttonWidth ? `width: ${buttonWidth}; flex: 0 0 ${buttonWidth};` : "";
+      const bg = value ? '#2196F3' : 'var(--jp-layout-color2, #e0e0e0)';
+      el.style.margin = "var(--jp-widgets-margin, 2px)";
+      // Button recipe copied from the ipywidgets labextension CSS
+      // (.jupyter-button) so both toolkits render identical buttons.
+      el.innerHTML = `<button style="height: var(--jp-widgets-inline-height, 28px); line-height: var(--jp-widgets-inline-height, 28px); padding: 0 10px; border: none; border-radius: 4px; background: ${bg}; color: ${value ? 'white' : 'var(--jp-ui-font-color1, inherit)'}; cursor: pointer; ${widthStyle}">${description}</button>`;
       const button = el.querySelector("button");
       button.addEventListener("click", () => {
         model.set("value", !model.get("value"));
         model.save_changes();
       });
+      // Reused buttons get a new element label on table refreshes, so
+      // the description trait must update the rendered text in place.
+      model.on("change:description", () => {
+        button.textContent = model.get("description");
+      });
       model.on("change:value", () => {
         const v = model.get("value");
-        button.style.background = v ? '#2196F3' : '#e0e0e0';
-        button.style.color = v ? 'white' : 'black';
+        button.style.background = v ? '#2196F3' : 'var(--jp-layout-color2, #e0e0e0)';
+        button.style.color = v ? 'white' : 'var(--jp-ui-font-color1, inherit)';
       });
     }
     export default { render };
     """
     value = traitlets.Bool(False).tag(sync=True)
     description = traitlets.Unicode("").tag(sync=True)
+    # Per-instance width: the lines table sets 75px so element buttons fill
+    # their grid column like the sibling ipywidgets toolkit.
+    button_width = traitlets.Unicode("").tag(sync=True)
 
 
 class FloatRangeSliderWidget(AnyWidget):
@@ -736,8 +833,8 @@ class FloatRangeSliderWidget(AnyWidget):
       const value = model.get("value") || [0, 0];
       const description = model.get("description");
       el.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
-          <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 5px;">
+          <label style="min-width: 120px; text-align: right; margin-right: 0px;">${description}</label>
           <input type="number" step="${step}" value="${value[0]}" class="low" style="flex: 1;">
           <span>-</span>
           <input type="number" step="${step}" value="${value[1]}" class="high" style="flex: 1;">
@@ -883,6 +980,7 @@ def _widget_config(w):
         cfg["type"] = "toggle"
         cfg["value"] = w.value
         cfg["label"] = w.description
+        cfg["button_width"] = getattr(w, "button_width", "")
     elif isinstance(w, (IntSliderWidget, FloatSliderWidget, OddIntSliderWidget)):
         cfg["type"] = "slider"
         cfg["value"] = w.value
@@ -1264,7 +1362,7 @@ class FlatContainer(AnyWidget):
         const row = document.createElement("div");
         row.style.display = "flex";
         row.style.flexDirection = "row";
-        row.style.gap = "8px";
+        row.style.gap = "4px";
         row.style.alignItems = "center";
         return row;
       }
@@ -1303,8 +1401,8 @@ class FlatContainer(AnyWidget):
             target.textContent = val;
           } else if (cfg.type === "toggle") {
             target.textContent = cfg.label;
-            target.style.background = val ? "#2196F3" : "#e0e0e0";
-            target.style.color = val ? "white" : "black";
+            target.style.background = val ? "#2196F3" : "var(--jp-layout-color2, #e0e0e0)";
+            target.style.color = val ? "white" : "var(--jp-ui-font-color1, inherit)";
           }
         }
       }
@@ -1479,6 +1577,7 @@ class FlatContainer(AnyWidget):
 
           if (cfg.type === "html") {
             const div = document.createElement("div");
+            div.style.margin = "var(--jp-widgets-margin, 2px)";
             div.innerHTML = cfg.value;
             parent.appendChild(div);
             idToEl[cfg.id] = { el: div, cfg };
@@ -1489,6 +1588,15 @@ class FlatContainer(AnyWidget):
             const btn = document.createElement("button");
             btn.textContent = cfg.label;
             btn.title = cfg.tooltip || "";
+            btn.style.margin = "var(--jp-widgets-margin, 2px)";
+            btn.style.height = "var(--jp-widgets-inline-height, 28px)";
+            btn.style.lineHeight = "var(--jp-widgets-inline-height, 28px)";
+            btn.style.padding = "0 10px";
+            btn.style.border = "none";
+            btn.style.borderRadius = "4px";
+            btn.style.background = "var(--jp-layout-color2, none)";
+            btn.style.color = "var(--jp-ui-font-color1, inherit)";
+            btn.style.cursor = "pointer";
             btn.addEventListener("click", () => {
               const prev = (model.get("_children_values") || {})[cfg.id] || 0;
               model.set("_children_values", { [cfg.id]: prev + 1 });
@@ -1502,8 +1610,18 @@ class FlatContainer(AnyWidget):
           if (cfg.type === "toggle") {
             const btn = document.createElement("button");
             btn.textContent = cfg.label;
-            btn.style.background = cfg.value ? "#2196F3" : "#e0e0e0";
-            btn.style.color = cfg.value ? "white" : "black";
+            btn.style.margin = "var(--jp-widgets-margin, 2px)";
+            btn.style.height = "var(--jp-widgets-inline-height, 28px)";
+            btn.style.lineHeight = "var(--jp-widgets-inline-height, 28px)";
+            btn.style.padding = "0 10px";
+            btn.style.border = "none";
+            btn.style.borderRadius = "4px";
+            btn.style.cursor = "pointer";
+            if (cfg.button_width) {
+              btn.style.width = cfg.button_width;
+            }
+            btn.style.background = cfg.value ? "#2196F3" : "var(--jp-layout-color2, #e0e0e0)";
+            btn.style.color = cfg.value ? "white" : "var(--jp-ui-font-color1, inherit)";
             btn.addEventListener("click", () => {
               const cur = (model.get("_children_values") || {})[cfg.id] ?? cfg.value;
               model.set("_children_values", { [cfg.id]: !cur });
@@ -1520,7 +1638,7 @@ class FlatContainer(AnyWidget):
             label.textContent = cfg.label;
             label.style.minWidth = "120px";
             label.style.textAlign = "right";
-            label.style.marginRight = "5px";
+            label.style.marginRight = "0px";
             row.appendChild(label);
             const prog = document.createElement("progress");
             prog.value = cfg.value;
@@ -1545,7 +1663,7 @@ class FlatContainer(AnyWidget):
               label.textContent = cfg.label;
               label.style.minWidth = "120px";
             label.style.textAlign = "right";
-            label.style.marginRight = "5px";
+            label.style.marginRight = "0px";
               row.appendChild(label);
             }
             if (cfg.visible === false) {
@@ -1556,6 +1674,8 @@ class FlatContainer(AnyWidget):
             select.style.flex = `0 0 ${selectWidth}`;
             select.style.width = selectWidth;
             select.style.maxWidth = selectWidth;
+            select.style.cssText += "__SELECT_STYLE__";
+__SELECT_FOCUS_JS__
             for (const opt of (cfg.options || [])) {
               const option = document.createElement("option");
               option.value = opt;
@@ -1580,7 +1700,7 @@ class FlatContainer(AnyWidget):
             l1.style.whiteSpace = "nowrap";
             l1.style.minWidth = "120px";
             l1.style.textAlign = "right";
-            l1.style.marginRight = "5px";
+            l1.style.marginRight = "0px";
             row.appendChild(l1);
             const input = document.createElement("input");
             input.type = typeof cfg.value === "number" ? "number" : "text";
@@ -1588,13 +1708,15 @@ class FlatContainer(AnyWidget):
             input.style.flex = "0 0 160px";
             input.style.width = "160px";
             input.style.maxWidth = "160px";
+            input.style.cssText += "__INPUT_STYLE__";
+__INPUT_FOCUS_JS__
             row.appendChild(input);
             const l2 = document.createElement("span");
             l2.textContent = cfg.label2;
             l2.style.whiteSpace = "nowrap";
             l2.style.minWidth = "120px";
             l2.style.textAlign = "left";
-            l2.style.marginLeft = "5px";
+            l2.style.marginLeft = "0px";
             row.appendChild(l2);
             parent.appendChild(row);
 
@@ -1619,6 +1741,8 @@ class FlatContainer(AnyWidget):
             input.style.flex = "0 0 160px";
             input.style.width = "160px";
             input.style.maxWidth = "160px";
+            input.style.cssText += "__INPUT_STYLE__";
+__INPUT_FOCUS_JS__
             row.appendChild(input);
             parent.appendChild(row);
 
@@ -1637,7 +1761,7 @@ class FlatContainer(AnyWidget):
             label.textContent = cfg.label;
             label.style.minWidth = "120px";
             label.style.textAlign = "right";
-            label.style.marginRight = "5px";
+            label.style.marginRight = "0px";
             row.appendChild(label);
             const rangeVal = cfg.value || [0, 0];
             const low = document.createElement("input");
@@ -1673,7 +1797,7 @@ class FlatContainer(AnyWidget):
             label.textContent = cfg.label;
             label.style.minWidth = cfg.label_min_width || "120px";
             label.style.textAlign = "right";
-            label.style.marginRight = "5px";
+            label.style.marginRight = "0px";
             row.appendChild(label);
           }
           if (cfg.visible === false) {
@@ -1773,6 +1897,10 @@ class FlatContainer(AnyWidget):
             input.style.flex = `0 0 ${inputWidth}`;
             input.style.width = inputWidth;
             input.style.maxWidth = inputWidth;
+            if (cfg.type === "number" || cfg.type === "text") {
+              input.style.cssText += "__INPUT_STYLE__";
+__INPUT_FOCUS_JS__
+            }
           }
           let colorInput = null;
           if (cfg.is_color) {
@@ -1826,6 +1954,12 @@ class FlatContainer(AnyWidget):
     }
     export default { render };
     """
+    _esm = (
+        _esm.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS)
+        .replace("__SELECT_STYLE__", _SELECT_STYLE_CSS)
+        .replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
+        .replace("__SELECT_FOCUS_JS__", _SELECT_FOCUS_JS)
+    )
     _children_config = traitlets.List().tag(sync=True)
     _children_values = traitlets.Dict(default_value={}).tag(sync=True)
     _layout = traitlets.Unicode("vertical").tag(sync=True)

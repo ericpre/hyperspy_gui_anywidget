@@ -68,9 +68,62 @@ def test_lines_at_energy_interactive():
     for expected in ("Element", "Line", "Energy (keV)", "Weight", "Intensity"):
         assert any(expected in h for h in header_values)
 
+    # The first row's element button fills its grid column like the
+    # ipywidgets toolkit (ToggleButton width 75px).
+    assert wd["gb"].children[5].button_width == "75px"
+
     wd["update"].clicks += 1
     time.sleep(0.3)
     assert len(wd["gb"].children) > 5
+
+
+def test_lines_table_rows_update_in_place():
+    from exspy._signal_tools import EDSRange
+
+    s = exspy.data.EDS_TEM_FePt_nanoparticles()
+    er = EDSRange(s)
+    wd = er.gui(**KWARGS)["anywidget"]["wdict"]
+    gb = wd["gb"]
+    # The initial table is built by the debounced callback, hence the sleep.
+    time.sleep(0.3)
+
+    first_btn = gb.children[5]
+    first_line = gb.children[6]
+    assert first_btn.description == "Ge"
+
+    first_btn.value = True
+    assert "Ge" in er.selected_elements
+
+    er.position = 10.6
+    time.sleep(0.3)
+    # A refresh updates the row widgets in place instead of recreating
+    # the views, which is what removes the notebook flicker.
+    assert gb.children[5] is first_btn
+    assert gb.children[6] is first_line
+    assert first_btn.description == "As"
+    # The reset matches fresh buttons: unpressed, selection retained.
+    assert first_btn.value is False
+    assert "Ge" in er.selected_elements
+    assert len(gb.children) == 25
+
+    # The reused toggle still selects the new element.
+    first_btn.value = True
+    assert "As" in er.selected_elements
+
+    # A smaller table drops the excess rows only.
+    er.position = 11.0
+    time.sleep(0.3)
+    assert gb.children[5] is first_btn
+    assert first_btn.description == "Ge"
+    assert len(gb.children) == 20
+
+    er.position = 9.92
+    time.sleep(0.3)
+    assert gb.children[5] is first_btn
+    assert first_btn.description == "Ge"
+    assert len(gb.children) == 25
+    assert first_btn.value is False
+    assert er.selected_elements == {"Ge", "As"}
 
 
 def test_lines_at_energy_close():

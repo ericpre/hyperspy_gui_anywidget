@@ -12,6 +12,7 @@ from hyperspy_gui_anywidget.custom_widgets import (
     FloatTextWidget,
     OddIntSliderWidget,
     TextWidget,
+    ToggleButtonWidget,
     _apply_value,
     _extract_value,
     _flatten_widget_tree,
@@ -48,6 +49,10 @@ def test_number_and_dropdown_width_reach_flat_config():
     dropdown = _Dropdown(options=["a", "b"], select_width="120px")
     assert _widget_config(dropdown)["select_width"] == "120px"
     assert _Dropdown(options=["a", "b"]).select_width == "160px"
+
+    toggle = ToggleButtonWidget(button_width="75px")
+    assert _widget_config(toggle)["button_width"] == "75px"
+    assert ToggleButtonWidget().button_width == ""
 
 
 def test_container_max_width_caps_both_toolkit_paths():

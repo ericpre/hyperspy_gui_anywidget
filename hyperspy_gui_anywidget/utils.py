@@ -17,13 +17,21 @@ import traitlets
 from ipywidgets import HBox, VBox
 from traits.api import Undefined
 
+from hyperspy_gui_anywidget.custom_widgets import (
+    _INPUT_FOCUS_JS,
+    _INPUT_STYLE_CSS,
+    _SELECT_FOCUS_JS,
+    _SELECT_STYLE_CSS,
+)
+
 
 class _FloatText(anywidget.AnyWidget):
     _esm = """
     function render({ model, el }) {
       const value = model.get("value");
-      el.innerHTML = `<input type="number" step="any" value="${value}" style="width:160px; max-width:160px;" />`;
+      el.innerHTML = `<input type="number" step="any" value="${value}" style="__INPUT_STYLE__ width:160px; max-width:160px;" />`;
       const input = el.querySelector("input");
+__INPUT_FOCUS_JS__
       input.addEventListener("change", () => {
         model.set("value", parseFloat(input.value));
         model.save_changes();
@@ -33,7 +41,7 @@ class _FloatText(anywidget.AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     value = traitlets.Float(0.0).tag(sync=True)
     description_tooltip = traitlets.Unicode("").tag(sync=True)
 
@@ -45,11 +53,12 @@ class _Text(anywidget.AnyWidget):
       const description = model.get("description");
       let html = "";
       if (description) {
-        html += `<label>${description}</label>`;
+        html += `<label style="margin-right: 4px;">${description}</label>`;
       }
-      html += `<input type="text" value="${value}" style="width:160px; max-width:160px;" />`;
+      html += `<input type="text" value="${value}" style="__INPUT_STYLE__ width:160px; max-width:160px;" />`;
       el.innerHTML = html;
       const input = el.querySelector("input");
+__INPUT_FOCUS_JS__
       input.addEventListener("change", () => {
         model.set("value", input.value);
         model.save_changes();
@@ -59,7 +68,7 @@ class _Text(anywidget.AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     value = traitlets.Unicode("").tag(sync=True)
     description = traitlets.Unicode("").tag(sync=True)
     description_tooltip = traitlets.Unicode("").tag(sync=True)
@@ -74,15 +83,16 @@ class _Dropdown(anywidget.AnyWidget):
       const selectWidth = model.get("select_width");
       let html = "";
       if (desc) {
-        html += `<label>${desc}</label>`;
+        html += `<label style="margin-right: 4px;">${desc}</label>`;
       }
-      html += `<select style="width:${selectWidth}; max-width:${selectWidth};">`;
+      html += `<select style="__SELECT_STYLE__ width:${selectWidth}; max-width:${selectWidth};">`;
       for (const opt of options) {
         html += `<option value="${opt}" ${opt === value ? "selected" : ""}>${opt}</option>`;
       }
       html += `</select>`;
       el.innerHTML = html;
       const select = el.querySelector("select");
+__SELECT_FOCUS_JS__
       select.addEventListener("change", () => {
         model.set("value", select.value);
         model.save_changes();
@@ -92,7 +102,9 @@ class _Dropdown(anywidget.AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__SELECT_STYLE__", _SELECT_STYLE_CSS).replace(
+        "__SELECT_FOCUS_JS__", _SELECT_FOCUS_JS
+    )
     options = traitlets.List(trait=traitlets.Unicode(), default_value=[]).tag(sync=True)
     value = traitlets.Unicode("").tag(sync=True)
     description = traitlets.Unicode("").tag(sync=True)
@@ -112,10 +124,11 @@ class _Labeled(anywidget.AnyWidget):
       el.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; width:100%;">
           <span style="white-space:nowrap; min-width:120px; text-align:right; margin-right:5px;">${label}</span>
-          <input type="${inputType}" value="${value}" title="${tooltip}" style="flex:0 0 160px; width:160px; max-width:160px;" />
+          <input type="${inputType}" value="${value}" title="${tooltip}" style="__INPUT_STYLE__ flex:0 0 160px; width:160px; max-width:160px;" />
         </div>
       `;
       const input = el.querySelector("input");
+__INPUT_FOCUS_JS__
       input.addEventListener("change", () => {
         const newVal = inputType === "number" ? parseFloat(input.value) : input.value;
         model.set("value", newVal);
@@ -126,7 +139,7 @@ class _Labeled(anywidget.AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     label = traitlets.Unicode("").tag(sync=True)
     value = traitlets.Any("").tag(sync=True)
     description_tooltip = traitlets.Unicode("").tag(sync=True)
@@ -143,11 +156,12 @@ class _LabeledSandwich(anywidget.AnyWidget):
       el.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; width:100%;">
            <span style="white-space:nowrap; min-width:120px; text-align:right; margin-right:5px;">${label1}</span>
-           <input type="${inputType}" value="${value}" title="${tooltip}" style="flex:0 0 160px; width:160px; max-width:160px;" />
+           <input type="${inputType}" value="${value}" title="${tooltip}" style="__INPUT_STYLE__ flex:0 0 160px; width:160px; max-width:160px;" />
            <span style="white-space:nowrap; min-width:120px; text-align:left; margin-left:5px;">${label2}</span>
         </div>
       `;
       const input = el.querySelector("input");
+__INPUT_FOCUS_JS__
       input.addEventListener("change", () => {
         const newVal = inputType === "number" ? parseFloat(input.value) : input.value;
         model.set("value", newVal);
@@ -158,7 +172,7 @@ class _LabeledSandwich(anywidget.AnyWidget):
       });
     }
     export default { render };
-    """
+    """.replace("__INPUT_STYLE__", _INPUT_STYLE_CSS).replace("__INPUT_FOCUS_JS__", _INPUT_FOCUS_JS)
     label1 = traitlets.Unicode("").tag(sync=True)
     label2 = traitlets.Unicode("").tag(sync=True)
     value = traitlets.Any("").tag(sync=True)

@@ -512,11 +512,12 @@ def print_lines_table_aw(obj, **kwargs):
     help = ContainerWidget(children=[help_text], layout="accordion", titles=["Help"])
     close = ButtonWidget(description="Close", tooltip="Close the widget.")
 
-    # Tight cell styles: the grid columns are narrow, so padding is removed
-    # compared to the EELS edges table entries.
-    header = '<p style="text-align: center; padding: 0px; margin: 0px; font-weight:bold">{}</p>'
-    entry = '<p style="text-align: center; padding: 0px; margin: 0px">{}</p>'
-    entry_left = '<p style="text-align: left; padding: 0px; margin: 0px">{}</p>'
+    # Header and entry cells use the ipywidgets inline line-height so the
+    # text rows stretch like the sibling toolkit's labels; the header
+    # underline mirrors its header labels (border_bottom='1px solid grey').
+    header = '<p style="text-align: center; padding: 0px; margin: 0px; font-weight:bold; line-height: var(--jp-widgets-inline-height, 28px); border-bottom: 1px solid grey">{}</p>'
+    entry = '<p style="text-align: center; padding: 0px; margin: 0px; line-height: var(--jp-widgets-inline-height, 28px)">{}</p>'
+    entry_left = '<p style="text-align: left; padding: 0px; margin: 0px; line-height: var(--jp-widgets-inline-height, 28px)">{}</p>'
 
     wdict["position"] = position
     wdict["width"] = width
@@ -549,22 +550,52 @@ def print_lines_table_aw(obj, **kwargs):
         if len(obj.selected_elements) != initial_length:
             obj.update_markers()
 
+    # Reused row widgets: updating the traits of existing widgets keeps
+    # their views alive, so a table refresh does not flash the whole
+    # grid. Only a changed row count adds or removes DOM nodes; an equal
+    # children assignment fires no traitlets event at all.
+    row_widgets = []
+
     @debounce(0.1)
     def update_table(change):
         lines_information = obj.get_lines_information()
-        items = header_items.copy()
+        rows = []
         if lines_information is not None:
             for element_str in lines_information.keys():
                 element = lines_information[element_str]
                 for line in element.keys():
                     line_info = element[line]
-                    btn = ToggleButtonWidget(value=False, description=element_str)
+                    rows.append((element_str, line, line_info))
+        for i, (element_str, line, line_info) in enumerate(rows):
+            if i < len(row_widgets):
+                btn, wline, wenergy, wweight, wintensity = row_widgets[i]
+                # Reset reused toggles without firing the selection
+                # observer so a refresh behaves like the fresh buttons
+                # of a full rebuild: the table renders unpressed while
+                # ``obj.selected_elements`` is left untouched.
+                if btn.value or btn.description != element_str:
+                    btn.unobserve(update_selected_elements, names="value")
+                    btn.value = False
                     btn.observe(update_selected_elements, names="value")
-                    wline = HTMLWidget(value=entry.format(str(line)))
-                    wenergy = HTMLWidget(value=entry.format(f"{line_info['energy_keV']:#.4g}"))
-                    wweight = HTMLWidget(value=entry.format(f"{line_info['weight']:#.4g}"))
-                    wintensity = HTMLWidget(value=entry_left.format(line_info["intensity"]))
-                    items.extend([btn, wline, wenergy, wweight, wintensity])
+                btn.description = element_str
+                wline.value = entry.format(str(line))
+                wenergy.value = entry.format(f"{line_info['energy_keV']:#.4g}")
+                wweight.value = entry.format(f"{line_info['weight']:#.4g}")
+                wintensity.value = entry_left.format(line_info["intensity"])
+            else:
+                # 75px fills the element column, matching the
+                # ipywidgets toolkit ToggleButton width.
+                btn = ToggleButtonWidget(value=False, description=element_str, button_width="75px")
+                btn.observe(update_selected_elements, names="value")
+                wline = HTMLWidget(value=entry.format(str(line)))
+                wenergy = HTMLWidget(value=entry.format(f"{line_info['energy_keV']:#.4g}"))
+                wweight = HTMLWidget(value=entry.format(f"{line_info['weight']:#.4g}"))
+                wintensity = HTMLWidget(value=entry_left.format(line_info["intensity"]))
+                row_widgets.append([btn, wline, wenergy, wweight, wintensity])
+        del row_widgets[len(rows) :]
+        items = header_items.copy()
+        for row in row_widgets:
+            items.extend(row)
         gb.children = items
 
     position.observe(update_table, names="value")
