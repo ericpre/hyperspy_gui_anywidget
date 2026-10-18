@@ -518,6 +518,7 @@ class BoundedFloatTextWidget(AnyWidget):
       const description = model.get("description");
       const disabled = model.get("disabled");
       const visible = model.get("visible");
+      const inputWidth = model.get("input_width");
 
       function formatValue(v) {
         if (v === null || v === undefined || isNaN(v)) return v;
@@ -530,7 +531,7 @@ class BoundedFloatTextWidget(AnyWidget):
       el.innerHTML = `
         <div style="display: ${visible ? "flex" : "none"}; align-items: center; gap: 10px; margin-bottom: 5px;">
           <label style="min-width: 120px; text-align: right; margin-right: 5px;">${description}</label>
-          <input type="number" min="${min}" max="${max}" step="${step}" value="${formatValue(value)}" ${disabled ? "disabled" : ""} style="flex: 0 0 160px; width: 160px; max-width: 160px;">
+          <input type="number" min="${min}" max="${max}" step="${step}" value="${formatValue(value)}" ${disabled ? "disabled" : ""} style="flex: 0 0 ${inputWidth}; width: ${inputWidth}; max-width: ${inputWidth};">
         </div>
       `;
       const row = el.querySelector("div");
@@ -599,6 +600,9 @@ class BoundedFloatTextWidget(AnyWidget):
     # Rounding at the traitlet validator keeps the synced Python value and
     # the two-decimal display consistent when traits are linked both ways.
     decimals = traitlets.Any(None, allow_none=True).tag(sync=True)
+    # Field width rather than fixed CSS so compact toolbars can shrink
+    # single rows without changing every widget in the package.
+    input_width = traitlets.Unicode("160px").tag(sync=True)
 
     @traitlets.validate("value")
     def _validate_value(self, proposal):
@@ -843,6 +847,7 @@ def _widget_config(w):
         cfg["max"] = getattr(w, "max", None)
         cfg["decimals"] = getattr(w, "decimals", None)
         cfg["continuous_update"] = getattr(w, "continuous_update", True)
+        cfg["input_width"] = getattr(w, "input_width", "160px")
     elif isinstance(w, TextWidget):
         cfg["type"] = "text"
         cfg["value"] = w.value
@@ -898,6 +903,7 @@ def _widget_config(w):
         cfg["value"] = w.value
         cfg["label"] = getattr(w, "description", "")
         cfg["options"] = w.options
+        cfg["select_width"] = getattr(w, "select_width", "160px")
     elif isinstance(w, _Labeled):
         cfg["type"] = "labeled"
         cfg["value"] = w.value
@@ -1516,9 +1522,10 @@ class FlatContainer(AnyWidget):
               row.style.display = "none";
             }
             const select = document.createElement("select");
-            select.style.flex = "0 0 160px";
-            select.style.width = "160px";
-            select.style.maxWidth = "160px";
+            const selectWidth = cfg.select_width || "160px";
+            select.style.flex = `0 0 ${selectWidth}`;
+            select.style.width = selectWidth;
+            select.style.maxWidth = selectWidth;
             for (const opt of (cfg.options || [])) {
               const option = document.createElement("option");
               option.value = opt;
@@ -1732,9 +1739,10 @@ class FlatContainer(AnyWidget):
               input.style.flex = "1";
             }
           } else {
-            input.style.flex = "0 0 160px";
-            input.style.width = "160px";
-            input.style.maxWidth = "160px";
+            const inputWidth = cfg.input_width || "160px";
+            input.style.flex = `0 0 ${inputWidth}`;
+            input.style.width = inputWidth;
+            input.style.maxWidth = inputWidth;
           }
           let colorInput = null;
           if (cfg.is_color) {

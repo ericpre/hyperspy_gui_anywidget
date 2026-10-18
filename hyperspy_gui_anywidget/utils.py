@@ -71,11 +71,12 @@ class _Dropdown(anywidget.AnyWidget):
       const options = model.get("options");
       const value = model.get("value");
       const desc = model.get("description");
+      const selectWidth = model.get("select_width");
       let html = "";
       if (desc) {
         html += `<label>${desc}</label>`;
       }
-      html += `<select style="width:160px; max-width:160px;">`;
+      html += `<select style="width:${selectWidth}; max-width:${selectWidth};">`;
       for (const opt of options) {
         html += `<option value="${opt}" ${opt === value ? "selected" : ""}>${opt}</option>`;
       }
@@ -96,6 +97,9 @@ class _Dropdown(anywidget.AnyWidget):
     value = traitlets.Unicode("").tag(sync=True)
     description = traitlets.Unicode("").tag(sync=True)
     description_tooltip = traitlets.Unicode("").tag(sync=True)
+    # Field width rather than fixed CSS so compact toolbars can shrink
+    # single rows without changing every widget in the package.
+    select_width = traitlets.Unicode("160px").tag(sync=True)
 
 
 class _Labeled(anywidget.AnyWidget):
@@ -250,7 +254,9 @@ def enum2dropdown(trait, description=None, **kwargs):
     description : str, optional
         Description text for the widget.
     **kwargs
-        Ignored. Kept for API compatibility.
+        Forwarded to the underlying ``_Dropdown`` when the trait has
+        enumerated values (for example ``select_width``); ignored for
+        non-enum traits, which return a plain text widget.
 
     Returns
     -------
@@ -267,6 +273,7 @@ def enum2dropdown(trait, description=None, **kwargs):
     widget = _Dropdown(
         options=list(values),
         value=values[0] if values else "",
+        **kwargs,
     )
     if description is not None:
         description_tooltip = trait.desc if trait.desc else ""

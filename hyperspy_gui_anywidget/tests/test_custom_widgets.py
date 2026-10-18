@@ -18,6 +18,7 @@ from hyperspy_gui_anywidget.custom_widgets import (
     _make_flat_container,
     _widget_config,
 )
+from hyperspy_gui_anywidget.utils import _Dropdown
 
 
 def test_widget_config_preserves_slider_metadata():
@@ -36,6 +37,16 @@ def test_widget_config_preserves_slider_metadata():
     assert cfg["step"] == 2
     assert cfg["slider_width"] == "220px"
     assert cfg["visible"] is False
+
+
+def test_number_and_dropdown_width_reach_flat_config():
+    number = BoundedFloatTextWidget(input_width="90px")
+    assert _widget_config(number)["input_width"] == "90px"
+    assert BoundedFloatTextWidget().input_width == "160px"
+
+    dropdown = _Dropdown(options=["a", "b"], select_width="120px")
+    assert _widget_config(dropdown)["select_width"] == "120px"
+    assert _Dropdown(options=["a", "b"]).select_width == "160px"
 
 
 @pytest.mark.parametrize("is_color", [True, False])
